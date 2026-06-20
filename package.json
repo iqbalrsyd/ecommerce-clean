@@ -1,0 +1,30 @@
+{
+  "name": "ecommerce-monolith-clean",
+  "version": "1.0.0",
+  "description": "Hardened e-commerce monolith for DevSecOps baseline testing",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "4.19.2",
+    "better-sqlite3": "11.3.0",
+    "bcrypt": "5.1.1",
+    "cookie-parser": "1.4.6",
+    "csurf": "1.11.0",
+    "helmet": "7.1.0",
+    "express-rate-limit": "7.4.0",
+    "express-validator": "7.2.0",
+    "jsonwebtoken": "9.0.2"
+  },
+  "devDependencies": {
+    "jest": "29.7.0",
+    "supertest": "7.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "author": "Researcher",
+  "license": "MIT"
+}
