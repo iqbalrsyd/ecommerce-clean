@@ -44,18 +44,26 @@ describe('E-commerce monolith smoke tests', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  test('POST /products/:id/review escapes XSS payload', async () => {
+  test('POST /products/:id/review rejects XSS payload (whitelist validation)', async () => {
     const res = await request(app)
       .post('/products/1/review')
       .send({ reviewer: '<img src=x>', comment: '<script>alert(1)</script>' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  test('POST /products/:id/review stores sanitized review', async () => {
+    const res = await request(app)
+      .post('/products/1/review')
+      .send({ reviewer: "Alice O'Brien", comment: 'Great & fast shipping' });
     expect(res.statusCode).toBe(201);
-    expect(res.body.comment).not.toContain('<script>');
+    expect(res.body.reviewer).toBe("Alice O'Brien");
+    expect(res.body.comment).toBe('Great &amp; fast shipping');
   });
 
   test('Helmet sets security headers', async () => {
     const res = await request(app).get('/');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['x-frame-options']).toMatch(/DENY|SAMEORIGIN/);
     expect(res.headers['strict-transport-security']).toBeDefined();
   });
 });

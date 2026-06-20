@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.6
-FROM node:20.18.1-bookworm-slim@sha256:9a81b87e2c0ba2e3e4f6a3b6c8d4e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192 AS deps
+FROM node:20.18.1-bookworm-slim@sha256:35eccf0e5cdb40b8ba3531e1b756d0ed52ec6e9d74c1756cc6503e8734effd27 AS deps
 
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:20.18.1-bookworm-slim@sha256:9a81b87e2c0ba2e3e4f6a3b6c8d4e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192 AS runtime
+FROM node:20.18.1-bookworm-slim@sha256:35eccf0e5cdb40b8ba3531e1b756d0ed52ec6e9d74c1756cc6503e8734effd27 AS runtime
 
 ENV NODE_ENV=production \
     PORT=3000
@@ -22,6 +22,7 @@ WORKDIR /app
 COPY --from=deps --chown=appuser:nodejs /app/node_modules ./node_modules
 COPY --chown=appuser:nodejs package.json ./
 COPY --chown=appuser:nodejs src ./src
+RUN mkdir -p /app/data && chown -R appuser:nodejs /app/data
 
 USER appuser
 
