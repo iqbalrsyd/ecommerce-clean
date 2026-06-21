@@ -104,9 +104,14 @@ jobs:
 
       # Semgrep action.yml v1 HANYA punya 2 input: config, publishToken.
       # `output_format` di-ignore. Pakai docker run langsung.
+      # FIX: Mount source code sebagai :ro, tapi tulis SARIF ke /out (writable).
+      #      Pattern: gunakan path terpisah untuk source dan output.
       - name: Run Semgrep (SARIF output via docker)
         run: |
-          docker run --rm -v "$PWD:/src:ro" returntocorp/semgrep:1.99.0 \
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD:/out" \
+            returntocorp/semgrep:1.99.0 \
             semgrep --config=p/owasp-top-ten \
                     --config=p/javascript \
                     --config=p/nodejs \
@@ -115,16 +120,16 @@ jobs:
                     --config=p/secrets \
                     --config=p/dockerfile \
                     --sarif \
-                    --output=semgrep-results.sarif \
+                    --output=/out/semgrep-results.sarif \
                     --timeout=600 \
                     /src
         continue-on-error: true
 
-      - name: Ensure Semgrep SARIF file exists (fallback for 0 findings)
+      - name: Ensure Semgrep SARIF file exists (fallback for 0 findings or scan error)
         if: always()
         run: |
           if [ ! -s semgrep-results.sarif ]; then
-            echo "::notice::Semgrep found 0 findings. Generating empty SARIF to satisfy upload-sarif."
+            echo "::notice::Semgrep did not produce a SARIF file. Generating empty SARIF for upload-sarif."
             printf '%s\n' \
               '{' \
               '  "version": "2.1.0",' \
