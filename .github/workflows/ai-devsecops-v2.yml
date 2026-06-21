@@ -106,7 +106,18 @@ jobs:
       # `output_format` di-ignore. Pakai docker run langsung.
       # FIX: Mount source code sebagai :ro, tapi tulis SARIF ke /out (writable).
       #      Pattern: gunakan path terpisah untuk source dan output.
-      - name: Run Semgrep (SARIF output via docker)
+      #
+      # Context-aware: e-commerce + OWASP API Top 10 custom rules diaktifkan.
+      # Rule file di .semgrep/ dipush oleh AI agent (pull_request_creation_node)
+      # berdasarkan detected_domain dari domain_detection_node.
+      - name: Show enabled custom Semgrep rule files
+        run: |
+          echo "Custom Semgrep rules enabled for this domain:"
+          for f in /src/.semgrep/*.yml; do
+            [ -f "$f" ] && echo "  - $f"
+          done
+
+      - name: Run Semgrep (SARIF output via docker, with domain-aware custom rules)
         run: |
           docker run --rm \
             -v "$PWD:/src:ro" \
@@ -119,6 +130,8 @@ jobs:
                     --config=p/sql-injection \
                     --config=p/secrets \
                     --config=p/dockerfile \
+                    --config=/src/.semgrep/owasp-api.yml \
+                    --config=/src/.semgrep/ecommerce.yml \
                     --sarif \
                     --output=/out/semgrep-results.sarif \
                     --timeout=600 \
