@@ -113,7 +113,7 @@ jobs:
       - name: Show enabled custom Semgrep rule files
         run: |
           echo "Custom Semgrep rules enabled for this domain:"
-          for f in /src/.semgrep/*.yml; do
+          for f in .semgrep/*.yml; do
             [ -f "$f" ] && echo "  - $f"
           done
 
