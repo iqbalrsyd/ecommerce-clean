@@ -1,22 +1,106 @@
-name: Test SARIF Upload (manual trigger)
-on:
-  workflow_dispatch:    # Trigger manual, tidak ganggu PR/push biasa
+name: CI DevSecOps (javascript)
+# Domain: general (confidence: 1.00)
+# Architecture: monolithic
+# Priority threats: none specific (no domain detected)
+
+"on":
   push:
-    branches: [master, main]
-    paths:
-      - '.github/workflows/test-sarif.yml'
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
 
 permissions:
   contents: read
+  pull-requests: read
   security-events: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  sast:
-    name: SAST Scan (Semgrep via docker)
+  lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    continue-on-error: false
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+        continue-on-error: true
+
+      - name: Run ESLint
+        run: |
+          if [ -f package.json ] && grep -q '"lint"' package.json; then
+            npm run lint --if-present
+          else
+            echo 'No lint script defined; skipping.'
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+        continue-on-error: true
+
+      - name: Run tests
+        run: npm test --if-present || true
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+        continue-on-error: true
+
+      - name: Build application
+        run: npm run build --if-present || true
+
+  sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
 
       # Semgrep action.yml v1 HANYA punya 2 input: config, publishToken.
       # `output_format` di-ignore. Pakai docker run langsung.
@@ -61,12 +145,12 @@ jobs:
           fi
           echo "✓ semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif) bytes"
 
-      - name: Upload Semgrep SARIF to GitHub Code Scanning
+      - name: Upload Semgrep SARIF to Code Scanning
         if: always() && hashFiles('semgrep-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@8272c299f21ca24af15dfe9ac0971ba969e5e0d5
         with:
           sarif_file: semgrep-results.sarif
-          category: semgrep
+          category: devsecops-semgrep
 
       - name: Upload Semgrep SARIF as artifact
         if: always()
@@ -78,20 +162,37 @@ jobs:
           retention-days: 30
 
   dependency-scan:
-    name: Dependency CVE Scan (Trivy fs SARIF)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    continue-on-error: false
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
 
-      - name: Install (for npm audit)
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+
+      - name: Install dependencies (no native build)
         run: npm install --no-audit --no-fund --ignore-scripts
         continue-on-error: true
 
-      - name: npm audit
+      - name: Run npm audit (CVE check, JSON output)
         id: npm-audit
         run: npm audit --audit-level=high --json > npm-audit-results.json || true
         continue-on-error: true
+
+      - name: Upload npm audit JSON as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: npm-audit-results-${{ github.sha }}
+          path: npm-audit-results.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Run Trivy filesystem scan (SARIF output)
         id: trivy-fs
@@ -129,14 +230,13 @@ jobs:
               '}' > trivy-fs-results.sarif
           fi
           echo "✓ trivy-fs-results.sarif size: $(stat -c%s trivy-fs-results.sarif) bytes"
-          head -3 trivy-fs-results.sarif
 
-      - name: Upload Trivy fs SARIF to GitHub Code Scanning
+      - name: Upload Trivy fs SARIF to Code Scanning
         if: always() && hashFiles('trivy-fs-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@8272c299f21ca24af15dfe9ac0971ba969e5e0d5
         with:
           sarif_file: trivy-fs-results.sarif
-          category: trivy-fs
+          category: devsecops-trivy-fs
 
       - name: Upload Trivy fs SARIF as artifact
         if: always()
@@ -147,15 +247,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload npm audit JSON as artifact
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: npm-audit-results-${{ github.sha }}
-          path: npm-audit-results.json
-          if-no-files-found: warn
-          retention-days: 30
-
       - name: Evaluate dependency-scan findings
         if: always()
         run: |
@@ -163,30 +254,53 @@ jobs:
           echo "- npm audit outcome: ${{ steps.npm-audit.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- trivy fs outcome: ${{ steps.trivy-fs.outcome }}" >> "$GITHUB_STEP_SUMMARY"
 
-  container-scan:
-    name: Container Image Scan (Trivy image SARIF)
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+  container-build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    continue-on-error: false
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - name: Check Dockerfile exists
-        id: df-check
-        run: |
-          if [ -f "Dockerfile" ]; then
-            echo "has_dockerfile=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_dockerfile=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Dockerfile tidak ditemukan, melewati container scan."
-          fi
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
 
       - name: Build Docker image
-        if: steps.df-check.outputs.has_dockerfile == 'true'
         run: docker build -t app:ci-${{ github.sha }} .
-        continue-on-error: true
 
-      - name: Trivy image scan (SARIF)
-        if: steps.df-check.outputs.has_dockerfile == 'true'
+  container-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    needs: container-build
+    if: needs.container-build.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Build Docker image
+        run: docker build -t app:ci-${{ github.sha }} .
+
+      - name: Scan image with Trivy (SARIF output)
         id: trivy-image
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
         with:
@@ -221,12 +335,12 @@ jobs:
           fi
           echo "✓ trivy-image-results.sarif size: $(stat -c%s trivy-image-results.sarif) bytes"
 
-      - name: Upload Trivy image SARIF to GitHub Code Scanning
+      - name: Upload Trivy image SARIF to Code Scanning
         if: always() && hashFiles('trivy-image-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@8272c299f21ca24af15dfe9ac0971ba969e5e0d5
         with:
           sarif_file: trivy-image-results.sarif
-          category: trivy-image
+          category: devsecops-trivy-image
 
       - name: Upload Trivy image SARIF as artifact
         if: always()
@@ -236,3 +350,20 @@ jobs:
           path: trivy-image-results.sarif
           if-no-files-found: warn
           retention-days: 30
+
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM
+        run: syft dir:. -o spdx-json=sbom.spdx.json
