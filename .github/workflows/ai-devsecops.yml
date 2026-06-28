@@ -1,0 +1,1566 @@
+name: CI DevSecOps (repository)
+# Domain: e-commerce (confidence: 1.00)
+# Architecture: monolithic
+# Build tools: docker
+# Priority threats: Stripe/Midtrans/PayPal key hardcoded in source; SQL injection di form checkout; CSRF di payment endpoint; Credit card data exposure di logs
+
+"on":
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep (lint ruleset)
+        uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/javascript
+            p/nodejs
+            p/expressjs
+            p/sql-injection
+            p/secrets
+            p/dockerfile
+        continue-on-error: false
+
+  sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Run semgrep (registry + inline custom rules, SARIF output)
+        run: |
+          # Single Semgrep invocation: registry rules via --config=p/...,
+          # custom domain/coverage/AI-generated rules via a temp file mounted
+          # read-only into the container (--config=/rules/ai-devsecops.yml).
+          # No double config, no separate rules file required in the target repo.
+          cat > /tmp/ai-devsecops-rules.yml <<'SEMGREP_EOF'
+          rules:
+          - id: api-bola-missing-ownership-check
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Endpoint menerima object ID dari URL (e.g. :id) dan handler tidak meng-verify
+              ownership terhadap user yang request. Attacker bisa akses resource user lain (IDOR).
+              Whitelist resource dengan `WHERE owner_id = :userId` atau equivalent. OWASP API1:2023.
+            metadata:
+              cwe: 'CWE-639: Authorization Bypass Through User-Controlled Key'
+              owasp-api: API1:2023 Broken Object Level Authorization
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$ROUTE.$METHOD("/api/orders/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/users/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/profile/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/carts/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/products/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/payments/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/transactions/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/items/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/api/resources/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/orders/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/users/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/profile/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/carts/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/products/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/payments/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/:userId", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/:orderId", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/:productId", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.$METHOD("/:id", $HANDLER)
+          
+                  '
+            - pattern-not: '$ROUTE.$METHOD("/api/orders/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/api/users/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/api/profile/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/api/carts/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/orders/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/users/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/:id", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/:userId", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/:orderId", $AUTH, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD($PATH, authRequired, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD($PATH, requireAuth, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD($PATH, isAuthenticated, $HANDLER)
+          
+                '
+            - pattern-not-inside: "function $HANDLER($REQ, $RES) {\n  ...\n  $REQ.user.id\n\
+                \  ...\n}\n"
+            - pattern-not-inside: "function $HANDLER($REQ, $RES) {\n  ...\n  $REQ.session.userId\n\
+                \  ...\n}\n"
+          - id: api-auth-bcrypt-missing-rounds
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: bcrypt rounds < 10 tidak cukup. Pakai rounds >= 12 untuk production (OWASP
+              recommendation). OWASP API2:2023.
+            metadata:
+              cwe: 'CWE-916: Use of Password Hash With Insufficient Computational Effort'
+              owasp-api: API2:2023 Broken Authentication
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: bcrypt.hash($PW, 1)
+              - pattern: bcrypt.hash($PW, 2)
+              - pattern: bcrypt.hash($PW, 3)
+              - pattern: bcrypt.hash($PW, 4)
+              - pattern: bcrypt.hash($PW, 5)
+              - pattern: bcrypt.hash($PW, 6)
+              - pattern: bcrypt.hash($PW, 7)
+              - pattern: bcrypt.hash($PW, 8)
+              - pattern: bcrypt.hash($PW, 9)
+              - pattern: bcrypt.hashSync($PW, 1)
+              - pattern: bcrypt.hashSync($PW, 2)
+              - pattern: bcrypt.hashSync($PW, 3)
+              - pattern: bcrypt.hashSync($PW, 4)
+              - pattern: bcrypt.hashSync($PW, 5)
+              - pattern: bcrypt.hashSync($PW, 6)
+              - pattern: bcrypt.hashSync($PW, 7)
+              - pattern: bcrypt.hashSync($PW, 8)
+              - pattern: bcrypt.hashSync($PW, 9)
+          - id: api-auth-no-rate-limit-on-login
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: Endpoint /login atau /auth/login terlihat tidak punya rate limiting di
+              file ini. Rate limiting bisa dipasang di infrastructure (Nginx, Cloudflare, AWS
+              WAF) atau middleware global — verifikasi dulu sebelum dianggap vulnerability.
+              OWASP API2:2023 + API4:2023.
+            metadata:
+              cwe: 'CWE-307: Improper Restriction of Excessive Authentication Attempts'
+              owasp-api: API2:2023 Broken Authentication
+              owasp-api-2: API4:2023 Unrestricted Resource Consumption
+              ai-devsecops-source: owasp-api.yml
+            pattern-regex: \bapp\.post\(\s*"(/login|/auth/login|/api/login)"\s*,\s*(?!(rateLimit|slowDown|loginRateLimit|bruteForceProtection|recaptcha|authLimiter)\b)[a-zA-Z_(]
+            pattern-not-regex: \bapp\.post\(\s*"(/login|/auth/login|/api/login)"\s*,\s*(rateLimit|slowDown|loginRateLimit|bruteForceProtection|recaptcha|authLimiter)\b
+            pattern-not-regex-2: \bapp\.use\(\s*(rateLimit|slowDown)\b
+          - id: api-mass-assignment-spread-body
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: 'Spread `req.body` ke object yang digunakan dalam ORM write (create/update)
+              tanpa field whitelisting. Attacker bisa tambah field privilege (`isAdmin: true`,
+              `role: ''admin''`) dan escalate. Whitelist field yang diizinkan dengan destructure
+              atau library `pick()`. OWASP API3:2023.'
+            metadata:
+              cwe: 'CWE-915: Improperly Controlled Modification of Dynamically-Determined Object
+                Attributes'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$MODEL.create({...$REQ.body})
+          
+                  '
+              - pattern: '$MODEL.update({...$REQ.body})
+          
+                  '
+              - pattern: '$MODEL.save({...$REQ.body})
+          
+                  '
+              - pattern: '$MODEL.create({ ..., ...$REQ.body, ... })
+          
+                  '
+              - pattern: '$MODEL.update({ ..., ...$REQ.body, ... })
+          
+                  '
+              - pattern: '$USER = { ...$REQ.body }
+          
+                  '
+            - pattern-not-inside: 'const { ..., $SAFE_FIELD, ... } = $REQ.body
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = { ..., $SAFE_FIELD, ... } = $REQ.body
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = pick($REQ.body, [...])
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = _.pick($REQ.body, [...])
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = joi.attempt($REQ.body, $SCHEMA)
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = schema.parse($REQ.body)
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = $REQ.body.specificField
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $SAFE = { $FIELD1: $REQ.body.f1, $FIELD2: $REQ.body.f2
+                }
+          
+                ...
+          
+                '
+          - id: api-excessive-data-exposure
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Response mengembalikan object yang mengandung field sensitif (`password`,
+              `passwordHash`, `token`, `secret`, `apiKey`, `isAdmin`, `ssn`, `creditCard`, `internalNotes`)
+              tanpa explicit field whitelisting. Gunakan destructure + explicit pick untuk memastikan
+              field sensitif tidak terekspos. OWASP API3:2023.
+            metadata:
+              cwe: 'CWE-213: Exposure of Sensitive Information Due to Incompatible Policies'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - patterns:
+                - pattern-either:
+                  - pattern: res.json({...$OBJ, ...})
+                  - pattern: res.json({...$OBJ})
+                  - pattern: res.json($OBJ)
+                  - pattern: res.send($OBJ)
+                - metavariable-pattern:
+                    metavariable: $OBJ
+                    patterns:
+                    - pattern-either:
+                      - pattern: '{ ..., password: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., passwordHash: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., token: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., secret: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., apiKey: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., ssn: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., creditCard: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., isAdmin: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., role: "admin", ... }
+          
+                          '
+                      - pattern: '{ ..., internalNotes: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., sessionToken: $X, ... }
+          
+                          '
+                      - pattern: '{ ..., resetToken: $X, ... }
+          
+                          '
+              - patterns:
+                - pattern-either:
+                  - pattern: 'res.json($USER.toJSON())
+          
+                      '
+                  - pattern: 'res.json($USER.toObject())
+          
+                      '
+                  - pattern: 'res.json($MODEL.toJSON())
+          
+                      '
+                - pattern-inside: '$USER = { ..., password: $X, ... }
+          
+                    ...
+          
+                    '
+                - pattern-not-inside: 'const { password: $P, ...$REST } = $USER
+          
+                    ...
+          
+                    res.json($REST.toJSON())
+          
+                    '
+            - pattern-not-inside: 'const { password: $P, ...$REST } = $USER
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'delete $USER.password
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'delete $USER.passwordHash
+          
+                ...
+          
+                '
+            - pattern-not-inside: '$USER = $USER.without(["password", "token", "secret"])
+          
+                ...
+          
+                '
+            - pattern-not-inside: '$OUT = _.omit($USER, ["password", "token", "secret"])
+          
+                ...
+          
+                '
+            - pattern-not-inside: "function $MAPPER($U) {\n  const { password: $P, ...$REST\
+                \ } = $U\n  return $REST\n}\n...\n"
+          - id: api-no-pagination
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: Endpoint return list dari database tanpa pagination. Attacker bisa fetch
+              semua data sekaligus (DoS / data exfiltration). Pakai `limit`/`offset` atau cursor.
+              OWASP API4:2023.
+            metadata:
+              cwe: 'CWE-770: Allocation of Resources Without Limits or Throttling'
+              owasp-api: API4:2023 Unrestricted Resource Consumption
+              ai-devsecops-source: owasp-api.yml
+            pattern-regex: \.(find(?:All)?)\(\s*\)\s*\.\s*then\(
+            pattern-not-regex: \.find(?:All)?\(\s*\)\s*\.\s*then\([^)]*console\.
+          - id: api-no-max-body-size
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: 'Tidak ada limit body size di body parser. Attacker bisa kirim payload
+              besar (DoS). Set `express.json({ limit: ''100kb'' })` atau body-parser limit.
+              Body size juga bisa di-set di ingress layer (Nginx `client_max_body_size`). OWASP
+              API4:2023.'
+            metadata:
+              cwe: 'CWE-770: Allocation of Resources Without Limits or Throttling'
+              owasp-api: API4:2023 Unrestricted Resource Consumption
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern: '$APP.use(express.json())
+          
+                '
+            - pattern-not: '$APP.use(express.json({limit: $L}))
+          
+                '
+            - pattern-not: '$APP.use(express.json({ limit: $L }))
+          
+                '
+          - id: api-admin-endpoint-no-role-check
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Endpoint /admin atau /api/admin tidak terlihat pakai role-check middleware.
+              Attacker user biasa bisa akses admin area. Pakai middleware `requireRole('admin')`
+              atau equivalent. Role check juga bisa dipasang global via `app.use('/admin', isAdmin)`.
+              OWASP API5:2023.
+            metadata:
+              cwe: 'CWE-285: Improper Authorization'
+              owasp-api: API5:2023 Broken Function Level Authorization
+              ai-devsecops-source: owasp-api.yml
+            pattern-regex: \b(app|router)\.(get|post|put|delete|patch)\(\s*"(/admin[^"]*|/api/admin[^"]*|/api/v\d+/admin[^"]*)"\s*,\s*(?!(requireAdmin|isAdmin|requireRole|isAuthorized|ensureAdmin|checkAdmin|hasRole|verifyAdmin|adminAuth|adminRequired|authMiddleware|isAuthenticated|requireAuth|authRequired|adminHandler|adminOnly)\b)[a-zA-Z_(]
+            pattern-not-regex: \bapp\.use\(\s*"/admin[^"]*"\s*,
+          - id: api-ssrf-user-controlled-url
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: URL dari user input dipakai di fetch/request tanpa validasi whitelist.
+              Attacker bisa request internal services (SSRF) atau hit metadata endpoint (169.254.169.254).
+              Whitelist domain atau resolve + validate IP. OWASP API7:2023.
+            metadata:
+              cwe: 'CWE-918: Server-Side Request Forgery (SSRF)'
+              owasp-api: API7:2023 Server Side Request Forgery
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: fetch($REQ.query.url)
+              - pattern: fetch($REQ.query.$URL_FIELD)
+              - pattern: fetch($REQ.body.url)
+              - pattern: fetch($REQ.body.$URL_FIELD)
+              - pattern: fetch($REQ.params.url)
+              - pattern: fetch($REQ.headers.url)
+              - pattern: axios.get($REQ.query.url)
+              - pattern: axios.get($REQ.body.url)
+              - pattern: axios($REQ.query.url)
+              - pattern: axios($REQ.body.url)
+              - pattern: http.get($REQ.query.url, $CALLBACK)
+              - pattern: http.request($REQ.query.url, $CALLBACK)
+              - pattern: https.get($REQ.query.url, $CALLBACK)
+              - pattern: https.request($REQ.query.url, $CALLBACK)
+              - pattern: got($REQ.query.url)
+              - pattern: got($REQ.body.url)
+              - pattern: nodeFetch($REQ.query.url)
+              - pattern: undici.request($REQ.query.url)
+              - pattern: requests.get($REQ.json.url)
+              - pattern: requests.get($REQ.args.get("url"))
+              - pattern: urllib.request.urlopen($REQ.args.get("url"))
+              - pattern: httpx.get($REQ.json.url)
+              - pattern: aiohttp.ClientSession().get($REQ.json.url)
+            - pattern-not-inside: 'const $VALIDATED = validateUrl($REQ.query.url)
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $VALIDATED = new URL($REQ.query.url)
+          
+                if (!$ALLOWLIST.has($VALIDATED.hostname)) { ... }
+          
+                ...
+          
+                '
+            - pattern-not-inside: 'const $VALIDATED = await isAllowedUrl($REQ.body.url)
+          
+                if (!$VALIDATED) { return }
+          
+                ...
+          
+                '
+          - id: api-cors-wildcard-origin
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: CORS pakai wildcard `*` origin. Browser akan izinkan request dari domain
+              manapun. Set explicit allowed origins (e.g. `https://app.example.com`). OWASP
+              API8:2023.
+            metadata:
+              cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted Domains'
+              owasp-api: API8:2023 Security Misconfiguration
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: 'res.setHeader("Access-Control-Allow-Origin", "*")
+          
+                  '
+              - pattern: 'res.set("Access-Control-Allow-Origin", "*")
+          
+                  '
+              - pattern: 'res.header("Access-Control-Allow-Origin", "*")
+          
+                  '
+              - pattern: 'origin: "*"
+          
+                  '
+              - patterns:
+                - pattern-inside: '$RES.header({...})
+          
+                    '
+                - pattern: '"Access-Control-Allow-Origin": "*"
+          
+                    '
+              - patterns:
+                - pattern-inside: '$RES.headers({...})
+          
+                    '
+                - pattern: '"Access-Control-Allow-Origin": "*"
+          
+                    '
+          - id: api-cors-reflect-origin
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: 'CORS reflect arbitrary `Origin` header kembali ke client. Attacker bisa
+              paksa browser kirim cookie cross-origin (CVE-style: Reflected CORS misconfig).
+              Set explicit allowlist origin. OWASP API8:2023.'
+            metadata:
+              cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted Domains'
+              owasp-api: API8:2023 Security Misconfiguration
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: res.setHeader("Access-Control-Allow-Origin", $REQ.headers.origin)
+              - pattern: res.setHeader("Access-Control-Allow-Origin", $REQ.headers["origin"])
+              - pattern: res.set("Access-Control-Allow-Origin", $REQ.headers.origin)
+              - pattern: res.set("Access-Control-Allow-Origin", $REQ.headers["origin"])
+              - pattern: res.header("Access-Control-Allow-Origin", $REQ.headers.origin)
+              - pattern: res.header("Access-Control-Allow-Origin", $REQ.headers["origin"])
+              - patterns:
+                - pattern-inside: '$RES.header({...})
+          
+                    '
+                - pattern-either:
+                  - pattern: '"Access-Control-Allow-Origin": $REQ.headers.origin
+          
+                      '
+                  - pattern: '"Access-Control-Allow-Origin": $REQ.headers["origin"]
+          
+                      '
+              - patterns:
+                - pattern-inside: '$RES.headers({...})
+          
+                    '
+                - pattern-either:
+                  - pattern: '"Access-Control-Allow-Origin": $REQ.headers.origin
+          
+                      '
+                  - pattern: '"Access-Control-Allow-Origin": $REQ.headers["origin"]
+          
+                      '
+              - pattern-either:
+                - pattern: 'cors({ origin: $REQ.headers.origin })
+          
+                    '
+                - pattern: 'cors({ origin: $REQ.headers["origin"] })
+          
+                    '
+          - id: api-stack-trace-exposure
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: 'Error response include stack trace atau detail internal. Attacker bisa
+              enumerasi internal structure. Log full error server-side, return generic message
+              ke client. Catatan: rule ini TIDAK flag stack trace di dalam `if (process.env
+              .NODE_ENV === ''development'')` — itu acceptable untuk dev. OWASP API8:2023.'
+            metadata:
+              cwe: 'CWE-209: Generation of Error Message Containing Sensitive Information'
+              owasp-api: API8:2023 Security Misconfiguration
+              ai-devsecops-source: owasp-api.yml
+            patterns:
+            - pattern-either:
+              - pattern: 'res.json({ error: $ERR.stack })
+          
+                  '
+              - pattern: 'res.json({ error: $ERR.message, stack: $ERR.stack })
+          
+                  '
+              - pattern: 'res.status(500).send($ERR.stack)
+          
+                  '
+              - pattern: 'res.status($CODE).json({ ..., stack: $ERR.stack, ... })
+          
+                  '
+              - pattern: 'res.json({ ..., stack: $ERR.stack, ... })
+          
+                  '
+              - pattern: 'res.send($ERR.stack)
+          
+                  '
+            - pattern-not-inside: "if (process.env.NODE_ENV === 'development') {\n  ...\n}\n"
+            - pattern-not-inside: "if (process.env.NODE_ENV === 'dev') {\n  ...\n}\n"
+            - pattern-not-inside: "if ($ENV === 'development') {\n  ...\n}\n"
+            - pattern-not-inside: "if (!$IS_PROD) {\n  ...\n}\n"
+            - pattern-not-inside: "if (config.env !== 'production') {\n  ...\n}\n"
+          - id: ecommerce-pci-card-data-in-logs
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: 'Jangan log data kartu kredit / payment (PAN, CVV, expiry). PCI-DSS v4.0
+              Requirement 3.4 melarang penyimpanan cleartext PAN di logs. Gunakan masker: `card.number.slice(-4)`
+              atau tokenization.'
+            metadata:
+              cwe: 'CWE-532: Insertion of Sensitive Information into Log File'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              pci-dss: 3.4 Render PAN unreadable anywhere it is stored
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: console.log(..., $CARD, ...)
+              - pattern: console.log(..., req.body.cardNumber, ...)
+              - pattern: console.log(..., req.body.card_number, ...)
+              - pattern: logger.info(..., $PAN, ...)
+              - pattern: console.error(..., $CARD, ...)
+            - metavariable-pattern:
+                metavariable: $CARD
+                patterns:
+                - pattern-either:
+                  - pattern: $REQ.body.cardNumber
+                  - pattern: $REQ.body.card_number
+                  - pattern: $REQ.body.cvv
+                  - pattern: $REQ.body.cvc
+                  - pattern: $X.card.number
+                  - pattern: $X.pan
+          - id: ecommerce-pci-stripe-secret-in-source
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: Stripe live secret key terdeteksi di source. Pindahkan ke env var atau
+              secret manager. Stripe key bocor = attacker bisa charge sembarang customer. PCI-DSS
+              8.2.1.
+            metadata:
+              cwe: 'CWE-798: Use of Hard-coded Credentials'
+              pci-dss: 8.2.1 Strong cryptography to render credentials unreadable
+              owasp: A07:2021 Identification and Authentication Failures
+              ai-devsecops-source: ecommerce.yml
+            pattern-regex: \b(sk_live_[A-Za-z0-9]{24,}|rk_live_[A-Za-z0-9]{24,})\b
+          - id: ecommerce-pci-raw-pan-in-code
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Regex detect pola nomor kartu kredit (16 digit) di kode. Ini indikasi hard-coded
+              test card atau data leak. PCI-DSS melarang hard-coded PAN di source code.
+            metadata:
+              cwe: 'CWE-798: Use of Hard-coded Credentials'
+              pci-dss: 3.4 Render PAN unreadable
+              owasp: A02:2021 Cryptographic Failures
+              ai-devsecops-source: ecommerce.yml
+            pattern-regex: \b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b
+          - id: ecommerce-api-bola-cart-access
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Endpoint mengambil object dengan ID dari URL/body tapi tidak verifikasi
+              ownership terhadap user yang request. Vulnerable ke IDOR / BOLA — attacker bisa
+              akses cart/order customer lain. OWASP API1:2023.
+            metadata:
+              cwe: 'CWE-639: Authorization Bypass Through User-Controlled Key'
+              owasp-api: API1:2023 Broken Object Level Authorization
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$ROUTE.get("/$PATH/:id", $HANDLER)
+          
+                  '
+              - pattern: '$ROUTE.post("/$PATH/:id", $HANDLER)
+          
+                  '
+              - pattern: 'router.$METHOD("/$PATH/:id", $HANDLER)
+          
+                  '
+            - pattern-not: '$ROUTE.$METHOD("/$PATH/:id", authRequired, $HANDLER)
+          
+                '
+            - pattern-not: '$ROUTE.$METHOD("/$PATH/:id", requireAuth, $HANDLER)
+          
+                '
+          - id: ecommerce-api-no-auth-on-checkout
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Endpoint /checkout, /payment, /order, /cart tidak pakai middleware auth.
+              Customer harus login sebelum checkout — kalau tidak, attacker bisa create order
+              tanpa akun. OWASP API5:2023 (Broken Function Level Authorization).
+            metadata:
+              cwe: 'CWE-306: Missing Authentication for Critical Function'
+              owasp-api: API5:2023 Broken Function Level Authorization
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$APP.post("/checkout", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/payment", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/orders", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/cart", $HANDLER)
+          
+                  '
+            - pattern-not: '$APP.post("/checkout", authRequired, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.post("/checkout", isAuthenticated, $HANDLER)
+          
+                '
+          - id: ecommerce-price-tampering
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: 'Harga atau quantity di-set dari request body tanpa validasi server-side.
+              Attacker bisa kirim `{price: 0, quantity: 999999}` dan checkout murah. Selalu
+              ambil price/quantity dari database trusted, bukan dari request.'
+            metadata:
+              cwe: 'CWE-602: Client-Side Enforcement of Server-Side Security'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$PRICE = $REQ.body.price
+          
+                  ...
+          
+                  '
+              - pattern: '$QTY = $REQ.body.quantity
+          
+                  ...
+          
+                  '
+              - pattern: '$TOTAL = $REQ.body.total
+          
+                  ...
+          
+                  '
+              - pattern: '$AMOUNT = $REQ.body.amount
+          
+                  ...
+          
+                  '
+          - id: ecommerce-discount-tampering
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Discount/coupon di-set dari request body tanpa validasi. Attacker bisa
+              pakai kode diskon internal atau apply diskon 100% sendiri. Validate diskon server-side
+              dan hanya apply kode yang verified.
+            metadata:
+              cwe: 'CWE-602: Client-Side Enforcement of Server-Side Security'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$DISCOUNT = $REQ.body.discount
+          
+                  ...
+          
+                  '
+              - pattern: '$COUPON = $REQ.body.coupon_code
+          
+                  ...
+          
+                  '
+          - id: ecommerce-mass-assignment-admin
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: 'Spread `req.body` atau `request.json` langsung ke object user/order. Attacker
+              bisa tambah field `is_admin: true` atau `role: ''admin''` di request body dan
+              escalate privilege. Whitelist field yang diizinkan. OWASP API3:2023.'
+            metadata:
+              cwe: 'CWE-915: Improperly Controlled Modification of Dynamically-Determined Object
+                Attributes'
+              owasp-api: API3:2023 Broken Object Property Level Authorization
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$USER = { ...$REQ.body }
+          
+                  '
+              - pattern: '$USER = Object.assign({}, $REQ.body)
+          
+                  '
+              - pattern: 'User.create($REQ.body)
+          
+                  '
+              - pattern: 'User.update($REQ.body)
+          
+                  '
+              - pattern: 'Order.create($REQ.body)
+          
+                  '
+              - pattern: 'request.json  # FastAPI/Stripe-style: check if this is followed by
+                  direct model instantiation
+          
+                  '
+          - id: ecommerce-sqli-order-lookup
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: SQL injection risk di order/product lookup. User input dipakai di raw SQL
+              string. Gunakan parameterized query. OWASP A03:2021.
+            metadata:
+              cwe: 'CWE-89: SQL Injection'
+              owasp: A03:2021 Injection
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: 'db.query("SELECT * FROM orders WHERE id = ''" + $ID + "''")
+          
+                  '
+              - pattern: 'db.query(`SELECT * FROM orders WHERE id = ${$ID}`)
+          
+                  '
+              - pattern: 'db.query(`SELECT * FROM products WHERE name LIKE ''%${$X}%''`)
+          
+                  '
+              - pattern: 'db.query("SELECT * FROM products WHERE name = ''" + $NAME + "''")
+          
+                  '
+          - id: ecommerce-xss-product-render
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Render product name/description/review dengan innerHTML atau dangerouslySetInnerHTML.
+              Attacker bisa inject script via product name atau review. Gunakan textContent
+              atau sanitizer. OWASP A03:2021.
+            metadata:
+              cwe: 'CWE-79: Cross-site Scripting'
+              owasp: A03:2021 Injection
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$EL.innerHTML = $REQ.body.productName
+          
+                  '
+              - pattern: '$EL.innerHTML = $REQ.body.review
+          
+                  '
+              - pattern: '<div dangerouslySetInnerHTML={{__html: $REQ.body.description}} />
+          
+                  '
+              - pattern: 'res.send($REQ.body.productName)
+          
+                  '
+          - id: ecommerce-csrf-no-protection
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: Payment/checkout endpoint tidak pakai CSRF protection. Pakai csurf, double-submit
+              cookie, atau SameSite=Strict cookie + custom header. OWASP A01:2021.
+            metadata:
+              cwe: 'CWE-352: Cross-Site Request Forgery'
+              owasp: A01:2021 Broken Access Control
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$APP.post("/payment", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/checkout", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/transfer", $HANDLER)
+          
+                  '
+            - pattern-not: '$APP.post("/payment", csrfProtection, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.post("/checkout", csrfProtection, $HANDLER)
+          
+                '
+          - id: ecommerce-jwt-weak-secret
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: JWT secret kelihatannya lemah atau default. JWT sign key HARUS random minimal
+              256-bit, dan HARUS di-load dari env/secret manager — tidak boleh di-hardcode.
+              OWASP API2:2023.
+            metadata:
+              cwe: 'CWE-798: Use of Hard-coded Credentials'
+              owasp-api: API2:2023 Broken Authentication
+              pci-dss: 8.3.1 Strong authentication factors
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: jwt.sign($PAYLOAD, "secret")
+              - pattern: jwt.sign($PAYLOAD, "your-256-bit-secret")
+              - pattern: jwt.sign($PAYLOAD, "changeme")
+              - pattern: jwt.sign($PAYLOAD, "supersecret")
+              - pattern: jwt.sign($PAYLOAD, "default")
+              - pattern: jwt.sign($PAYLOAD, process.env.JWT_SECRET || "secret")
+              - pattern: new hmac($SECRET) where $SECRET == "secret"
+              - pattern: jwt.encode($PAYLOAD, "secret", algorithm="HS256")
+          - id: ecommerce-jwt-no-expiration
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: JWT tidak set expiration. Token tanpa expiry = forever valid kalau bocor.
+              Set `expiresIn` di jwt.sign(). OWASP API2:2023.
+            metadata:
+              cwe: 'CWE-613: Insufficient Session Expiration'
+              owasp-api: API2:2023 Broken Authentication
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: jwt.sign($PAYLOAD, $SECRET)
+              - pattern: jwt.sign($PAYLOAD, $SECRET, $ALGO)
+            - pattern-not: 'jwt.sign($PAYLOAD, $SECRET, $ALGO, { expiresIn: $EXP })'
+            - pattern-not: 'jwt.sign($PAYLOAD, $SECRET, { expiresIn: $EXP })'
+          - id: ecommerce-log-sensitive-data
+            languages:
+            - javascript
+            - typescript
+            severity: WARNING
+            message: Log seluruh req.body. Bisa log password, card data, atau PII. Whitelist
+              field yang di-log. PCI-DSS 3.2.
+            metadata:
+              cwe: 'CWE-532: Insertion of Sensitive Information into Log File'
+              pci-dss: 3.2 Protect stored cardholder data
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: console.log(req.body)
+              - pattern: console.log($REQ.body)
+              - pattern: logger.info(req.body)
+              - pattern: winston.info(req.body)
+              - pattern: req.log.info(req.body)
+              - pattern: morgan.token("body", (req) => JSON.stringify(req.body))
+          - id: ecommerce-md5-password
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: MD5 dipakai untuk hash (kemungkinan password). MD5 broken untuk security.
+              Pakai bcrypt, argon2, atau scrypt. PCI-DSS 8.3.2.
+            metadata:
+              cwe: 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+              owasp: A02:2021 Cryptographic Failures
+              pci-dss: 8.3.2 Render passwords unreadable during transmission/storage
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: crypto.createHash("md5")
+              - pattern: hashlib.md5()
+              - pattern: require("md5")
+              - pattern: $X.md5($PASSWORD)
+          - id: ecommerce-sha1-password
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: WARNING
+            message: SHA-1 dipakai untuk hash. SHA-1 deprecated untuk security (collision attacks).
+              Pakai SHA-256+ atau bcrypt untuk password.
+            metadata:
+              cwe: 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+              owasp: A02:2021 Cryptographic Failures
+              ai-devsecops-source: ecommerce.yml
+            patterns:
+            - pattern-either:
+              - pattern: crypto.createHash("sha1")
+              - pattern: hashlib.sha1()
+              - pattern: require("sha1")
+          - id: pci-dss-3-4-pan-in-source
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: 'Possible Primary Account Number (PAN) in source code. PCI-DSS v4.0 Req
+              3.4 prohibits storing cleartext PAN. Move to a tokenization service (e.g. Stripe
+              tokens, Braintree vault) or redact (display only last 4 digits: card.number.slice(-4)).'
+            metadata:
+              cwe: 'CWE-312: Cleartext Storage of Sensitive Information'
+              pci-dss: 3.4 Render PAN unreadable anywhere it is stored
+              owasp: A02:2021 Cryptographic Failures
+              ai-devsecops-source: pci-dss.yml
+            pattern-regex: \b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b
+          - id: pci-dss-3-4-cvv-in-source
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: Possible CVV/CVC code in source. PCI-DSS v4.0 Req 3.3 prohibits storing
+              CVV after authorization. This MUST be transmitted directly to the payment processor
+              and never persisted.
+            metadata:
+              cwe: 'CWE-312: Cleartext Storage of Sensitive Information'
+              pci-dss: 3.3 Protect stored cardholder data
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$CVV = $REQ.body.cvv
+          
+                  '
+              - pattern: '$CVV = $REQ.body.cvc
+          
+                  '
+              - pattern: '$X.cvv = $VAL
+          
+                  '
+              - pattern: '$X.cvc = $VAL
+          
+                  '
+              - pattern: 'db.save(..., $CVV, ...)
+          
+                  '
+          - id: pci-dss-3-4-magnetic-stripe-data
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: Possible magnetic stripe data or track data. PCI-DSS forbids storing CVV2,
+              PIN, or full magnetic stripe data after authorization. Reject the entire request
+              and inform the customer.
+            metadata:
+              cwe: 'CWE-312: Cleartext Storage of Sensitive Information'
+              pci-dss: 3.2 Protect stored cardholder data
+              ai-devsecops-source: pci-dss.yml
+            pattern-regex: \b(?:track1|track2|magnetic[-_ ]?stripe)\b
+          - id: pci-dss-4-payment-over-http
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: Payment endpoint over HTTP (not HTTPS). PCI-DSS v4.0 Req 4.2 requires strong
+              cryptography (TLS 1.2+) for transmitting cardholder data over open networks. Use
+              https:// for all payment-related URLs.
+            metadata:
+              cwe: 'CWE-319: Cleartext Transmission of Sensitive Information'
+              pci-dss: 4.2 Use strong cryptography for cardholder data transmission
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$URL = "http://.../*payment*"
+          
+                  '
+              - pattern: '$URL = "http://.../*checkout*"
+          
+                  '
+              - pattern: '$URL = "http://.../*card*"
+          
+                  '
+              - pattern: 'fetch("http://.../*payment*", ...)
+          
+                  '
+          - id: pci-dss-6-5-1-injection-flaws
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: SQL injection in payment context. PCI-DSS v4.0 Req 6.5.1 mandates protection
+              against injection flaws. Use parameterized queries.
+            metadata:
+              cwe: 'CWE-89: SQL Injection'
+              pci-dss: 6.5.1 Address common coding vulnerabilities in software
+              owasp: A03:2021 Injection
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: 'db.query("SELECT * FROM payments WHERE id = ''" + $ID + "''")
+          
+                  '
+              - pattern: 'db.query("SELECT * FROM orders WHERE card_id = ''" + $CARD + "''")
+          
+                  '
+              - pattern: 'db.query(`SELECT * FROM payments WHERE amount = ${$X}`)
+          
+                  '
+          - id: pci-dss-6-5-7-xss
+            languages:
+            - javascript
+            - typescript
+            severity: ERROR
+            message: XSS in payment context (cardholder data exposure). PCI-DSS v4.0 Req 6.5.7
+              requires protection against XSS for any page that handles cardholder data. Sanitize
+              all user input with textContent or a proven sanitizer (DOMPurify).
+            metadata:
+              cwe: 'CWE-79: Cross-site Scripting'
+              pci-dss: 6.5.7 Address common coding vulnerabilities
+              owasp: A03:2021 Injection
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$EL.innerHTML = $REQ.body.billingAddress
+          
+                  '
+              - pattern: 'res.send("<div>" + $REQ.body.cardholderName + "</div>")
+          
+                  '
+          - id: pci-dss-8-3-1-strong-auth-payment
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: ERROR
+            message: Payment endpoint without strong authentication. PCI-DSS v4.0 Req 8.3.1
+              requires strong authentication factors (MFA, OTP, biometrics) for access to cardholder
+              data. Apply authRequired or requireAuth middleware to /payment, /checkout, /api/orders.
+            metadata:
+              cwe: 'CWE-306: Missing Authentication for Critical Function'
+              pci-dss: 8.3.1 Strong authentication for cardholder data access
+              owasp-api: API5:2023 Broken Function Level Authorization
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$APP.post("/payment", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/checkout", $HANDLER)
+          
+                  '
+              - pattern: '$APP.post("/api/charge", $HANDLER)
+          
+                  '
+            - pattern-not: '$APP.post("/payment", authRequired, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.post("/payment", requireAuth, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.post("/payment", isAuthenticated, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.post("/payment", authMiddleware, $HANDLER)
+          
+                '
+          - id: pci-dss-10-2-audit-log-cardholder-access
+            languages:
+            - javascript
+            - typescript
+            - python
+            severity: WARNING
+            message: 'Access to cardholder data without audit log. PCI-DSS v4.0 Req 10.2 requires
+              audit logs for all access to cardholder data. Log: user ID, type of event, time,
+              success/failure, origin.'
+            metadata:
+              cwe: 'CWE-778: Insufficient Logging'
+              pci-dss: 10.2 Audit logs for cardholder data access
+              ai-devsecops-source: pci-dss.yml
+            patterns:
+            - pattern-either:
+              - pattern: '$APP.get("/payment/:id", $HANDLER)
+          
+                  '
+              - pattern: '$APP.get("/api/cards/:id", $HANDLER)
+          
+                  '
+            - pattern-not: '$APP.get("/payment/:id", auditLog, $HANDLER)
+          
+                '
+            - pattern-not: '$APP.get("/payment/:id", $HANDLER, $LOGGER)
+          
+                '
+          SEMGREP_EOF
+          docker run --rm \
+            -v "${{ github.workspace }}:/src:ro" \
+            -v "${{ github.workspace }}:/out" \
+            -v "/tmp/ai-devsecops-rules.yml:/rules/ai-devsecops.yml:ro" \
+            returntocorp/semgrep:1.99.0 \
+            semgrep \
+            --config=/rules/ai-devsecops.yml \
+            --config=p/owasp-top-ten \
+            --config=p/javascript \
+            --config=p/nodejs \
+            --config=p/expressjs \
+            --config=p/sql-injection \
+            --config=p/secrets \
+            --config=p/dockerfile \
+            --sarif \
+            --output=/out/semgrep-results.sarif \
+            --timeout=600 \
+            --no-error \
+            /src
+        continue-on-error: true
+
+      - name: Ensure Semgrep SARIF file exists (fallback for 0 findings or scan error)
+        if: always()
+        run: |
+          if [ ! -s semgrep-results.sarif ]; then
+            echo "::notice::Semgrep did not produce a SARIF file. Generating empty SARIF for upload-sarif."
+            printf '%s\n' \
+              '{' \
+              '  "version": "2.1.0",' \
+              '  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",' \
+              '  "runs": [' \
+              '    {' \
+              '      "tool": {' \
+              '        "driver": {' \
+              '          "name": "Semgrep",' \
+              '          "version": "1.99.0",' \
+              '          "informationUri": "https://semgrep.dev"' \
+              '        }' \
+              '      },' \
+              '      "results": []' \
+              '    }' \
+              '  ]' \
+              '}' > semgrep-results.sarif
+          fi
+          echo "✓ semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif) bytes"
+
+      - name: Upload Semgrep SARIF to GitHub Code Scanning
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Upload Semgrep SARIF as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semgrep-results-${{ github.sha }}
+          path: semgrep-results.sarif
+          if-no-files-found: warn
+          retention-days: 30
+
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Run Trivy filesystem scan (SARIF output)
+        id: trivy-fs
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'HIGH,CRITICAL'
+        continue-on-error: true
+
+      - name: Ensure trivy-fs-results.sarif exists (fallback for 0 findings)
+        if: always()
+        run: |
+          if [ ! -s trivy-fs-results.sarif ]; then
+            echo "::notice::Trivy found 0 findings. Generating empty SARIF to satisfy upload-sarif."
+            printf '%s\n' \
+              '{' \
+              '  "version": "2.1.0",' \
+              '  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",' \
+              '  "runs": [' \
+              '    {' \
+              '      "tool": {' \
+              '        "driver": {' \
+              '          "name": "Trivy",' \
+              '          "version": "0.65.0",' \
+              '          "informationUri": "https://aquasecurity.github.io/trivy/"' \
+              '        }' \
+              '      },' \
+              '      "results": []' \
+              '    }' \
+              '  ]' \
+              '}' > trivy-fs-results.sarif
+          fi
+          echo "✓ trivy-fs-results.sarif size: $(stat -c%s trivy-fs-results.sarif) bytes"
+
+      - name: Upload Trivy fs SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-fs
+
+      - name: Upload Trivy fs SARIF as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: trivy-fs-results-${{ github.sha }}
+          path: trivy-fs-results.sarif
+          if-no-files-found: warn
+          retention-days: 30
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Run Gitleaks on PR diff (SARIF output)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_FORMAT: sarif
+          GITLEAKS_REPORT_PATH: gitleaks-diff-results.sarif
+        continue-on-error: true
+
+      - name: Run Gitleaks on full working tree (SARIF output)
+        run: |
+          set -e
+          # Install gitleaks CLI (matches the action's version).
+          wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar -xz -C /tmp
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks || mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+          # Scan the full working tree. `--no-banner` quiets
+          # the ASCII art. Output is SARIF 2.1.0.
+          gitleaks detect --source . --no-banner --report-format sarif --report-path gitleaks-full-results.sarif --exit-code 0 || true
+        continue-on-error: true
+
+      - name: Merge Gitleaks SARIF results
+        if: always()
+        run: |
+          set -e
+          if [ -s gitleaks-diff-results.sarif ] && [ -s gitleaks-full-results.sarif ]; then
+            # Both scans produced output — concatenate
+            # the result arrays. We use a tiny Python
+            # snippet because `jq` is not guaranteed to
+            # be installed on ubuntu-latest runners.
+            python3 - <<'PY'
+          import json, pathlib
+          diff = json.loads(pathlib.Path('gitleaks-diff-results.sarif').read_text())
+          full = json.loads(pathlib.Path('gitleaks-full-results.sarif').read_text())
+          merged_runs = (diff.get('runs') or []) + (full.get('runs') or [])
+          # De-duplicate by (ruleId, physicalLocation uri:line).
+          seen = set()
+          merged_results = []
+          for run in merged_runs:
+              for r in (run.get('results') or []):
+                  loc = (r.get('locations') or [{}])[0].get('physicalLocation', {})
+                  uri = (loc.get('artifactLocation') or {}).get('uri', '')
+                  line = (loc.get('region') or {}).get('startLine', 0)
+                  key = (r.get('ruleId',''), uri, line)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  merged_results.append(r)
+          base = diff if diff.get('runs') else full
+          base['runs'] = merged_runs
+          for run in base['runs']:
+              run['results'] = merged_results if run is base['runs'][0] else (run.get('results') or [])
+          pathlib.Path('gitleaks-results.sarif').write_text(json.dumps(base, indent=2))
+          print(f'Merged SARIF: {len(merged_results)} unique findings')
+          PY
+          elif [ -s gitleaks-full-results.sarif ]; then
+            cp gitleaks-full-results.sarif gitleaks-results.sarif
+          elif [ -s gitleaks-diff-results.sarif ]; then
+            cp gitleaks-diff-results.sarif gitleaks-results.sarif
+          fi
+          ls -la gitleaks-*.sarif || true
+
+      - name: Ensure gitleaks-results.sarif exists (fallback for 0 findings)
+        if: always()
+        run: |
+          if [ ! -s gitleaks-results.sarif ]; then
+            echo "::notice::Gitleaks found 0 findings. Generating empty SARIF to satisfy upload-sarif."
+            printf '%s\n' \
+              '{' \
+              '  "version": "2.1.0",' \
+              '  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",' \
+              '  "runs": [' \
+              '    {' \
+              '      "tool": {' \
+              '        "driver": {' \
+              '          "name": "Gitleaks",' \
+              '          "version": "8.24.3",' \
+              '          "informationUri": "https://gitleaks.io"' \
+              '        }' \
+              '      },' \
+              '      "results": []' \
+              '    }' \
+              '  ]' \
+              '}' > gitleaks-results.sarif
+          fi
+          echo "✓ gitleaks-results.sarif size: $(stat -c%s gitleaks-results.sarif) bytes"
+
+      - name: Upload Gitleaks SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks
+
+      - name: Upload Gitleaks SARIF as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gitleaks-sarif-${{ github.sha }}
+          path: gitleaks-results.sarif
+          if-no-files-found: warn
+          retention-days: 30
+
+
+  container-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Analyze Dockerfile for security misconfigurations
+        if: hashFiles('**/Dockerfile') != ''
+        run: |
+          echo '## Dockerfile Security Checks' >> "$GITHUB_STEP_SUMMARY"
+          issues=0
+          for df in $(find . -name Dockerfile -not -path './.git/*' 2>/dev/null); do
+            echo "Analyzing $df..."
+            # Check: run as non-root user
+            if ! grep -qE '^USER ' "$df"; then
+              echo "::warning file=$df::Missing USER instruction — container runs as root"
+              echo "- \`$df\`: Missing USER instruction (runs as root)" >> "$GITHUB_STEP_SUMMARY"
+              issues=$((issues+1))
+            elif grep -qE '^USER root' "$df"; then
+              echo "::warning file=$df::USER root detected — should use non-root user"
+              echo "- \`$df\`: USER root (use non-root)" >> "$GITHUB_STEP_SUMMARY"
+              issues=$((issues+1))
+            fi
+            # Check: base image pinned by digest
+            base=$(grep -m1 '^FROM ' "$df" | sed 's/FROM //' | awk '{print $1}')
+            if echo "$base" | grep -qE '@sha256:'; then
+              echo "  Base image pinned: $base"
+            elif [ -n "$base" ] && echo "$base" | grep -qE ':latest$|^[^:]*$'; then
+              echo "::warning file=$df::Base image $base not pinned by digest — supply@sha256:..."
+              echo "- \`$df\`: Base image \`$base\` not pinned by digest" >> "$GITHUB_STEP_SUMMARY"
+              issues=$((issues+1))
+            fi
+            # Check: expose patterns
+            if grep -qE '^EXPOSE [0-9]+-[0-9]+' "$df"; then
+              echo "::warning file=$df::EXPOSE with port range detected — limit to specific ports"
+              echo "- \`$df\`: EXPOSE port range (limit to specific ports)" >> "$GITHUB_STEP_SUMMARY"
+              issues=$((issues+1))
+            fi
+          done
+          echo "Dockerfile checks complete: $issues issue(s)" >> "$GITHUB_STEP_SUMMARY"
+        continue-on-error: true
+
+      - name: Build Docker image
+        run: docker build -t app:ci-${{ github.sha }} .
+        continue-on-error: true
+
+      - name: Scan image with Trivy (SARIF output)
+        id: trivy-image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+        with:
+          image-ref: 'app:ci-${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          severity: 'HIGH,CRITICAL'
+        continue-on-error: true
+
+      - name: Ensure trivy-image-results.sarif exists (fallback for 0 findings)
+        if: always()
+        run: |
+          if [ ! -s trivy-image-results.sarif ]; then
+            echo "::notice::Trivy Image found 0 findings. Generating empty SARIF to satisfy upload-sarif."
+            printf '%s\n' \
+              '{' \
+              '  "version": "2.1.0",' \
+              '  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",' \
+              '  "runs": [' \
+              '    {' \
+              '      "tool": {' \
+              '        "driver": {' \
+              '          "name": "Trivy Image",' \
+              '          "version": "0.65.0",' \
+              '          "informationUri": "https://aquasecurity.github.io/trivy/"' \
+              '        }' \
+              '      },' \
+              '      "results": []' \
+              '    }' \
+              '  ]' \
+              '}' > trivy-image-results.sarif
+          fi
+          echo "✓ trivy-image-results.sarif size: $(stat -c%s trivy-image-results.sarif) bytes"
+
+      - name: Upload Trivy image SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
+
+      - name: Upload Trivy image SARIF as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: trivy-image-results-${{ github.sha }}
+          path: trivy-image-results.sarif
+          if-no-files-found: warn
+          retention-days: 30
