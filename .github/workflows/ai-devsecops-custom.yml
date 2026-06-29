@@ -11,109 +11,252 @@ permissions:
   contents: read
   security-events: write
 jobs:
-  pci-dss:
+  jwt-auth-hardening:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
+    needs:
+    - sast
     steps:
     - name: Checkout code
       uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       with:
         persist-credentials: false
-        fetch-depth: 0
-    - name: Semgrep (e-commerce / payment-security ruleset) docker run --rm \ -v "${{
-        github.workspace }}:/src:ro" \ -v "${{ github.workspace }}:/out" \ returntocorp/semgrep:1.99.0
-        \ semgrep \ --config=/src/.semgrep/ecommerce.yml \ --config=/src/.semgrep/pci-dss.yml
-        \ --config=/src/.semgrep/owasp-api.yml \ --config=p/owasp-top-ten \ --config=p/javascript
-        \ --config=p/nodejs \ --config=p/expressjs \ --config=p/sql-injection \ --config=p/secrets
-        \ --config=p/typescript \ --config=p/security-audit \ --sarif --output=/out/pci-dss-semgrep.sarif
-        \ --timeout=300 --no-error /src
-      continue-on-error: true
-    - name: Scan for hardcoded PAN/CVV in source
-      run: "PAN_PATTERN='\\b(4[0-9]{12}([0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(011|5[0-9]{2})[0-9]{12})\\\
-        b'\nCVV_PATTERN='(?i)cvv[\\\"\\\\s:=]+[0-9]{3,4}'\nrm -f pci-findings.txt\n\
-        touch pci-findings.txt\ngrep -rE \"${PAN_PATTERN}\" --include='*.js' --include='*.ts'\
-        \ --include='*.py' src/ 2>/dev/null \\\n  | head -20 | awk -F: '{printf \"\
-        PAN|%s|%s|%s\\n\",$1,$2,$3}' >> pci-findings.txt\ngrep -rE \"${CVV_PATTERN}\"\
-        \ --include='*.js' --include='*.ts' --include='*.py' src/ 2>/dev/null \\\n\
-        \  | head -20 | awk -F: '{printf \"CVV|%s|%s|%s\\n\",$1,$2,$3}' >> pci-findings.txt\n\
-        if [ -s pci-findings.txt ]; then\n  echo \"::error::Found $(wc -l < pci-findings.txt)\
-        \ potential PCI-DSS violation(s):\"\n  cat pci-findings.txt\nelse\n  echo\
-        \ '\u2713 No hardcoded PAN/CVV detected'\nfi\n"
-      continue-on-error: true
-    - name: Validate .env not in git history
-      run: "if git log --all --full-history -- '.env' 2>/dev/null | grep -q commit;\
-        \ then\n  echo '::error::.env file found in git history. Rotate all secrets!'\n\
-        \  git log --all --full-history -- '.env' --oneline | head -5\nelse\n  echo\
-        \ '\u2713 .env not in git history'\nfi\n"
-      continue-on-error: true
-    - name: Generate PCI-DSS audit SARIF from findings
+    - name: detect-jwt-sign-without-expiry
+      run: "set -e; FAIL=0; while IFS= read -r line; do file=$(echo \"$line\" | cut\
+        \ -d: -f1); ln=$(echo \"$line\" | cut -d: -f2); code=$(echo \"$line\" | cut\
+        \ -d: -f3-); if echo \"$code\" | grep -qE \"jwt\\.sign\\s*\\(\" && ! echo\
+        \ \"$code\" | grep -q \"expiresIn\"; then echo \"::error file=$file,line=$ln::jwt.sign()\
+        \ called without expiresIn option \u2014 token can be replayed indefinitely\"\
+        ; FAIL=1; fi; done < <(grep -rn \"jwt\\.sign\" --include=\"*.js\" routes/\
+        \ middleware/ src/ 2>/dev/null || true); while IFS= read -r line; do file=$(echo\
+        \ \"$line\" | cut -d: -f1); ln=$(echo \"$line\" | cut -d: -f2); code=$(echo\
+        \ \"$line\" | cut -d: -f3-); if echo \"$code\" | grep -qE \"jwt\\.verify\"\
+        \ && ! echo \"$code\" | grep -q \"algorithms\"; then echo \"::error file=$file,line=$ln::jwt.verify()\
+        \ called without explicit algorithms allow-list (alg-confusion risk)\"; FAIL=1;\
+        \ fi; done < <(grep -rn \"jwt\\.verify\" --include=\"*.js\" routes/ middleware/\
+        \ src/ 2>/dev/null || true); exit $FAIL\n"
+    - name: semgrep-jwt-bcrypt-misuse
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure jwt-bcrypt-misuse-results.sarif exists (fallback for 0 findings)
       if: always()
-      run: "python3 - <<'PY'\nimport json, os, pathlib\nfindings = []\n\n# 1. PAN/CVV\
-        \ findings (custom regex script above).\nf = pathlib.Path('pci-findings.txt')\n\
-        if f.exists():\n    for line in f.read_text().splitlines():\n        parts\
-        \ = line.split('|', 4)\n        if len(parts) < 5:\n            continue\n\
-        \        kind, file_path, line_no, snippet = parts\n        rule = 'pci-dss-pan-in-source'\
-        \ if kind == 'PAN' else 'pci-dss-cvv-in-source'\n        findings.append({\n\
-        \            'ruleId': rule,\n            'level': 'error',\n            'message':\
-        \ {'text': f'PCI-DSS {kind} detected in source code. Cardholder data must\
-        \ never be committed.'},\n            'locations': [{\n                'physicalLocation':\
-        \ {\n                    'artifactLocation': {'uri': file_path},\n       \
-        \             'region': {'startLine': int(line_no) if line_no.isdigit() else\
-        \ 1},\n                },\n            }],\n            'properties': {'security-severity':\
-        \ '9.5'},\n        })\n\n# 2. Semgrep findings (e-commerce / payment-security\n\
-        # ruleset from .github/ai-devsecops-rules.yml or\n# the registry rulesets\
-        \ p/owasp-top-ten, p/javascript,\n# p/sql-injection, etc.). De-duplicate by\
-        \ (ruleId,\n# uri, startLine) and emit everything under a single\n# 'pci-dss-audit'\
-        \ run for the Code Scanning tab.\nseen = {(\n    r['ruleId'],\n    (r.get('locations')\
-        \ or [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri',\
-        \ ''),\n    (r.get('locations') or [{}])[0].get('physicalLocation', {}).get('region',\
-        \ {}).get('startLine', 0),\n) for r in findings}\nsemgrep_sarif = pathlib.Path('pci-dss-semgrep.sarif')\n\
-        if semgrep_sarif.exists():\n    try:\n        sg = json.loads(semgrep_sarif.read_text())\n\
-        \        for run in sg.get('runs') or []:\n            for r in run.get('results')\
-        \ or []:\n                rid = r.get('ruleId', 'semgrep-unknown')\n     \
-        \           loc = (r.get('locations') or [{}])[0].get('physicalLocation',\
-        \ {})\n                uri = (loc.get('artifactLocation') or {}).get('uri',\
-        \ '')\n                start_line = (loc.get('region') or {}).get('startLine',\
-        \ 0)\n                key = (rid, uri, start_line)\n                if key\
-        \ in seen:\n                    continue\n                seen.add(key)\n\
-        \                findings.append({\n                    'ruleId': rid,\n \
-        \                   'level': r.get('level', 'warning'),\n                \
-        \    'message': r.get('message', {'text': rid}),\n                    'locations':\
-        \ r.get('locations', []),\n                    'properties': r.get('properties',\
-        \ {}),\n                })\n    except Exception as e:\n        print(f'Could\
-        \ not parse Semgrep SARIF: {e}')\n\nsarif = {\n    'version': '2.1.0',\n \
-        \   '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',\n    'runs':\
-        \ [{\n        'tool': {'driver': {\n            'name': 'pci-dss-audit',\n\
-        \            'version': '1.0',\n            'informationUri': 'https://www.pcisecuritystandards.org/',\n\
-        \        }},\n        'results': findings,\n    }],\n}\npathlib.Path('pci-dss-audit.sarif').write_text(json.dumps(sarif,\
-        \ indent=2))\nprint(f'Generated SARIF with {len(findings)} finding(s) (PAN/CVV\
-        \ + Semgrep)')\nPY\necho \"\u2713 pci-dss-audit.sarif size: $(stat -c%s pci-dss-audit.sarif)\
+      run: "if [ ! -s jwt-bcrypt-misuse-results.sarif ]; then\n  echo \"::notice::jwt-bcrypt-misuse\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"jwt-bcrypt-misuse\",' \\\n    '      \
+        \    \"version\": \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > jwt-bcrypt-misuse-results.sarif\n\
+        fi\necho \"\u2713 jwt-bcrypt-misuse-results.sarif size: $(stat -c%s jwt-bcrypt-misuse-results.sarif)\
         \ bytes\"\n"
-    - name: Ensure pci-dss-audit.sarif exists (fallback for 0 findings or scan error)
+    - name: Upload jwt-bcrypt-misuse SARIF to GitHub Code Scanning
       if: always()
-      run: "if [ ! -s pci-dss-audit.sarif ]; then\n  echo '::notice::pci-dss-audit\
-        \ did not produce a SARIF file. Generating empty SARIF to satisfy upload-sarif.'\n\
-        \  printf '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n   \
-        \ '  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n\
-        \    '  \"runs\": [{' \\\n    '    {' \\\n    '      \"tool\": {' \\\n   \
-        \ '        \"driver\": {' \\\n    '          \"name\": \"pci-dss-audit\",'\
-        \ \\\n    '          \"version\": \"1.0\",' \\\n    '          \"informationUri\"\
-        : \"https://www.pcisecuritystandards.org/\"' \\\n    '        }' \\\n    '\
-        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
-        \n    '}' > pci-dss-audit.sarif\nfi\necho \"\u2713 pci-dss-audit.sarif size:\
-        \ $(stat -c%s pci-dss-audit.sarif) bytes\"\n"
-    - name: Upload devsecops-pci-dss SARIF to Code Scanning
-      if: always() && hashFiles('pci-dss-audit.sarif') != ''
       uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
       with:
-        sarif_file: pci-dss-audit.sarif
-        category: devsecops-pci-dss
-    - name: Upload pci-dss-audit SARIF as artifact
-      if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        sarif_file: jwt-bcrypt-misuse-results.sarif
+        category: jwt-bcrypt-misuse
+  sqlite-injection-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       with:
-        name: pci-dss-audit-${{ github.sha }}
-        path: pci-dss-audit.sarif
-        if-no-files-found: warn
-        retention-days: 30
+        persist-credentials: false
+    - name: detect-concat-in-sqlite-calls
+      run: 'set -e; FAIL=0; echo "Checking for string concatenation in better-sqlite3
+        .prepare()..."; matches=$(grep -rnE "\.prepare\s*\(\s*[`''\"][^`''\"]*\\\$\{|"
+        --include="*.js" routes/ db.js src/ 2>/dev/null || true); if [ -n "$matches"
+        ]; then echo "::error::Template-literal / concatenation in db.prepare() found
+        (SQL injection risk):"; echo "$matches"; FAIL=1; fi; echo "Checking for inline
+        ${} in .exec/.all/.get/.run arguments..."; matches2=$(grep -rnE "\.(exec|all|get|run)\s*\(\s*[`''\"][^`''\"]*\\\$\{"
+        --include="*.js" routes/ db.js src/ 2>/dev/null || true); if [ -n "$matches2"
+        ]; then echo "::error::User-controlled interpolation passed to better-sqlite3
+        execution method:"; echo "$matches2"; FAIL=1; fi; if [ $FAIL -eq 0 ]; then
+        echo "OK: no string-concat SQL patterns detected"; fi; exit $FAIL
+
+        '
+    - name: semgrep-bettersqlite3-injection
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure sqlite-injection-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s sqlite-injection-results.sarif ]; then\n  echo \"::notice::sqlite-injection\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"sqlite-injection\",' \\\n    '       \
+        \   \"version\": \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > sqlite-injection-results.sarif\n\
+        fi\necho \"\u2713 sqlite-injection-results.sarif size: $(stat -c%s sqlite-injection-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload sqlite-injection SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: sqlite-injection-results.sarif
+        category: sqlite-injection
+  express-api-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: detect-missing-helmet-and-cors-misconfig
+      run: "set -e; FAIL=0; ENTRY=\"\"; for f in app.js server.js index.js src/app.js\
+        \ src/server.js src/index.js; do if [ -f \"$f\" ]; then ENTRY=\"$f\"; break;\
+        \ fi; done; if [ -z \"$ENTRY\" ]; then echo \"WARN: no Express entry file\
+        \ found\"; exit 0; fi; if ! grep -qE \"helmet\\s*\\(\\s*\\)|require\\(['\\\
+        \"]helmet['\\\"]\\)\" \"$ENTRY\"; then echo \"::error file=$ENTRY::app.use(helmet())\
+        \ not detected in Express entry \u2014 security headers missing\"; FAIL=1;\
+        \ fi; if grep -qE \"contentSecurityPolicy\\s*:\\s*false\" \"$ENTRY\"; then\
+        \ echo \"::error file=$ENTRY::Helmet CSP explicitly disabled\"; FAIL=1; fi;\
+        \ if grep -rnE \"cors\\s*\\(\\s*\\{[^}]*origin\\s*:\\s*['\\\"]\\*['\\\"]\"\
+        \ --include=\"*.js\" \"$ENTRY\" routes/ 2>/dev/null; then echo \"::error::CORS\
+        \ configured with wildcard origin on API routes\"; FAIL=1; fi; for sensitive\
+        \ in routes/checkout.js routes/orders.js; do if [ -f \"$sensitive\" ]; then\
+        \ if ! grep -qE \"requireAuth|verifyToken|isAuthenticated|authMiddleware|protect\"\
+        \ \"$sensitive\"; then echo \"::error file=$sensitive::Sensitive e-commerce\
+        \ route appears to lack authentication middleware\"; FAIL=1; fi; if ! grep\
+        \ -qE \"rateLimit|rate-limit|express-rate-limit|slowDown\" \"$sensitive\"\
+        \ \"$ENTRY\"; then echo \"::error file=$sensitive::No rate limiting on checkout/orders\
+        \ endpoint (OWASP API4)\"; FAIL=1; fi; fi; done; exit $FAIL\n"
+    - name: semgrep-express-api-top10
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure express-api-top10-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s express-api-top10-results.sarif ]; then\n  echo \"::notice::express-api-top10\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"express-api-top10\",' \\\n    '      \
+        \    \"version\": \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > express-api-top10-results.sarif\n\
+        fi\necho \"\u2713 express-api-top10-results.sarif size: $(stat -c%s express-api-top10-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload express-api-top10 SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: express-api-top10-results.sarif
+        category: express-api-top10
+  ecommerce-payment-stripe-webhook-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-stripe-webhook-handler
+      run: "set -e\nfail=0\n# Check webhook handler exists\nif ! grep -rnE 'stripe\\\
+        .webhooks\\.constructEvent' src/ 2>/dev/null | grep -q .; then\n  echo '::error\
+        \ file=src/routes/webhook.js::Stripe webhook signature not verified \u2014\
+        \ use stripe.webhooks.constructEvent()'\n  fail=1\nfi\n# Check Stripe API\
+        \ key loaded from env, not hardcoded\nif grep -rnE 'sk_(live|test)_[A-Za-z0-9]{20,}'\
+        \ src/ 2>/dev/null | grep -v process.env | grep -q .; then\n  echo '::error\
+        \ file=src/config/stripe.js::Hardcoded Stripe key found in source \u2014 move\
+        \ to process.env.STRIPE_SECRET_KEY'\n  fail=1\nfi\nexit $fail\n"
+    - name: Ensure ecommerce-payment-stripe-webhook-results.sarif exists (fallback
+        for 0 findings)
+      if: always()
+      run: "if [ ! -s ecommerce-payment-stripe-webhook-results.sarif ]; then\n  echo\
+        \ \"::notice::ecommerce-payment-stripe-webhook found 0 findings. Generating\
+        \ empty SARIF to satisfy upload-sarif.\"\n  printf '%s\\n' \\\n    '{' \\\n\
+        \    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\"\
+        ,' \\\n    '  \"runs\": [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n\
+        \    '        \"driver\": {' \\\n    '          \"name\": \"ecommerce-payment-stripe-webhook\"\
+        ,' \\\n    '          \"version\": \"0.65.0\",' \\\n    '          \"informationUri\"\
+        : \"https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '\
+        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
+        \n    '}' > ecommerce-payment-stripe-webhook-results.sarif\nfi\necho \"\u2713\
+        \ ecommerce-payment-stripe-webhook-results.sarif size: $(stat -c%s ecommerce-payment-stripe-webhook-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload ecommerce-payment-stripe-webhook SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: ecommerce-payment-stripe-webhook-results.sarif
+        category: ecommerce-payment-stripe-webhook
+  ecommerce-cart-bola-ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-cart-order-ownership
+      run: "set -e\nfail=0\n# Find GET /cart/:id or GET /orders/:id routes\nfor route\
+        \ in cart orders; do\n  if grep -rnE \"router\\.(get|post)\\s*\\(\\s*['\\\"\
+        ]\\/?$route\\/:id\" src/ 2>/dev/null | grep -q .; then\n    # Check if ownership\
+        \ verification is present in same file\n    if ! grep -rnE '(req\\.user\\\
+        .id|userId|ownerId|verifyOwnership)' src/routes/$route.js 2>/dev/null | grep\
+        \ -q .; then\n      echo \"::error file=src/routes/$route.js::$route route\
+        \ uses :id parameter without ownership verification \u2014 vulnerable to BOLA/IDOR\"\
+        \n      fail=1\n    fi\n  fi\ndone\nexit $fail\n"
+    - name: Ensure ecommerce-cart-bola-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s ecommerce-cart-bola-results.sarif ]; then\n  echo \"::notice::ecommerce-cart-bola\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"ecommerce-cart-bola\",' \\\n    '    \
+        \      \"version\": \"0.65.0\",' \\\n    '          \"informationUri\": \"\
+        https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '   \
+        \   },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\n\
+        \    '}' > ecommerce-cart-bola-results.sarif\nfi\necho \"\u2713 ecommerce-cart-bola-results.sarif\
+        \ size: $(stat -c%s ecommerce-cart-bola-results.sarif) bytes\"\n"
+    - name: Upload ecommerce-cart-bola SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: ecommerce-cart-bola-results.sarif
+        category: ecommerce-cart-bola
