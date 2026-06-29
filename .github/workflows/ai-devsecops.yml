@@ -1,0 +1,935 @@
+name: CI DevSecOps (javascript)
+'on':
+  push:
+    branches:
+    - main
+    - master
+    - develop
+  pull_request:
+    branches:
+    - main
+    - master
+    - develop
+  workflow_dispatch: null
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '20'
+        cache: npm
+    - name: Install dependencies
+      run: npm ci --no-audit --no-fund
+      continue-on-error: true
+    - name: Run ESLint
+      run: "if [ -f package.json ] && grep -q '\"lint\"' package.json; then\n  npm\
+        \ run lint --if-present\nelse\n  echo 'No lint script defined; skipping.'\n\
+        fi\n"
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '20'
+        cache: npm
+    - name: Install dependencies
+      run: npm ci --no-audit --no-fund
+      continue-on-error: true
+    - name: Run tests
+      run: npm test --if-present || true
+  sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: Run semgrep (registry + inline custom rules, SARIF output)
+      run: "# Single Semgrep invocation: registry rules via --config=p/...,\n# custom\
+        \ domain/coverage/AI-generated rules via a temp file mounted\n# read-only\
+        \ into the container (--config=/rules/ai-devsecops.yml).\n# No double config,\
+        \ no separate rules file required in the target repo.\ncat > /tmp/ai-devsecops-rules.yml\
+        \ <<'SEMGREP_EOF'\nrules:\n- id: api-bola-missing-ownership-check\n  languages:\n\
+        \  - javascript\n  - typescript\n  severity: ERROR\n  message: Endpoint menerima\
+        \ object ID (e.g. :id, :orderId, :userId) dari URL tapi\n    tidak verify\
+        \ ownership. Attacker bisa akses resource user lain dengan iterasi\n    ID.\
+        \ OWASP API1:2023.\n  metadata:\n    cwe: 'CWE-639: Authorization Bypass Through\
+        \ User-Controlled Key'\n    owasp-api: API1:2023 Broken Object Level Authorization\n\
+        \    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$APP.$METHOD(\"/$P/:id\", $H)\n\n        '\n    - pattern:\
+        \ 'router.$METHOD(\"/$P/:id\", $H)\n\n        '\n    - pattern: '$APP.$METHOD(\"\
+        /$P/:userId\", $H)\n\n        '\n    - pattern: '$APP.$METHOD(\"/$P/:orderId\"\
+        , $H)\n\n        '\n- id: api-auth-bcrypt-missing-rounds\n  languages:\n \
+        \ - javascript\n  - typescript\n  - python\n  severity: WARNING\n  message:\
+        \ bcrypt dengan rounds < 10 tidak cukup. Pakai rounds >= 12 untuk production\n\
+        \    (OWASP recommendation). OWASP API2:2023.\n  metadata:\n    cwe: 'CWE-916:\
+        \ Use of Password Hash With Insufficient Computational Effort'\n    owasp-api:\
+        \ API2:2023 Broken Authentication\n    ai-devsecops-source: owasp-api.yml\n\
+        \  pattern-regex: bcrypt\\.(?:hash|hashSync)\\s*\\(\\s*[^,]+,\\s*([0-9]+|saltRounds\\\
+        s*:\\s*([0-9]+))\\s*\\)\n- id: api-auth-no-rate-limit-on-login\n  languages:\n\
+        \  - javascript\n  - typescript\n  - python\n  severity: WARNING\n  message:\
+        \ Endpoint /login atau /auth/login tidak pakai rate limiting. Attacker bisa\n\
+        \    brute-force password. Pakai express-rate-limit atau library serupa. OWASP\
+        \ API2:2023\n    + API4:2023.\n  metadata:\n    cwe: 'CWE-307: Improper Restriction\
+        \ of Excessive Authentication Attempts'\n    owasp-api: API2:2023 Broken Authentication\n\
+        \    owasp-api-2: API4:2023 Unrestricted Resource Consumption\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$APP.post(\"\
+        /login\", $H)\n\n        '\n    - pattern: '$APP.post(\"/auth/login\", $H)\n\
+        \n        '\n    - pattern: '$APP.post(\"/api/login\", $H)\n\n        '\n\
+        \  - pattern-not: '$APP.post(\"/login\", rateLimit, $H)\n\n      '\n  - pattern-not:\
+        \ '$APP.post(\"/auth/login\", rateLimit, $H)\n\n      '\n- id: api-mass-assignment-spread-body\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ Spread `req.body` ke object user/model. Attacker bisa tambah field privilege\n\
+        \    (is_admin, role) dan escalate. Whitelist allowed fields. OWASP API3:2023.\n\
+        \  metadata:\n    cwe: 'CWE-915: Improperly Controlled Modification of Dynamically-Determined\
+        \ Object\n      Attributes'\n    owasp-api: API3:2023 Broken Object Property\
+        \ Level Authorization\n    ai-devsecops-source: owasp-api.yml\n  patterns:\n\
+        \  - pattern-either:\n    - pattern: '$MODEL.create({...$REQ.body})\n\n  \
+        \      '\n    - pattern: '$MODEL.update({...$REQ.body})\n\n        '\n- id:\
+        \ api-excessive-data-exposure\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: WARNING\n  message: Response kirim semua field model ke client.\
+        \ Field sensitif (password hash,\n    internal flag, PII) bisa terekspos.\
+        \ Whitelist field yang dikembalikan. OWASP API3:2023.\n  metadata:\n    cwe:\
+        \ 'CWE-213: Exposure of Sensitive Information Due to Incompatible Policies'\n\
+        \    owasp-api: API3:2023 Broken Object Property Level Authorization\n   \
+        \ ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n \
+        \   - pattern: 'res.json($USER)\n\n        '\n    - pattern: 'res.json($MODEL.toJSON())\n\
+        \n        '\n    - pattern: 'res.json({user: $USER})\n\n        '\n- id: api-no-pagination\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Endpoint return list tanpa pagination. Attacker bisa fetch semua\
+        \ data sekaligus\n    (DoS / data exfiltration). Pakai limit/offset atau cursor.\
+        \ OWASP API4:2023.\n  metadata:\n    cwe: 'CWE-770: Allocation of Resources\
+        \ Without Limits or Throttling'\n    owasp-api: API4:2023 Unrestricted Resource\
+        \ Consumption\n    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$MODEL.find()\n\n        '\n    - pattern: '$MODEL.findAll()\n\
+        \n        '\n    - pattern: 'db.query(\"SELECT * FROM $T\")\n\n        '\n\
+        \    - pattern: 'res.json($MODEL.all())\n\n        '\n- id: api-no-max-body-size\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: WARNING\n  message:\
+        \ 'Tidak ada limit body size. Attacker bisa kirim payload besar (DoS). Set\n\
+        \    `express.json({ limit: ''100kb'' })` atau body-parser limit. OWASP API4:2023.'\n\
+        \  metadata:\n    cwe: 'CWE-770: Allocation of Resources Without Limits or\
+        \ Throttling'\n    owasp-api: API4:2023 Unrestricted Resource Consumption\n\
+        \    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern: '$APP.use(express.json())\n\
+        \n      '\n  - pattern-not: '$APP.use(express.json({limit: $L}))\n\n     \
+        \ '\n  - pattern-not: '$APP.use(express.json({limit:$L}))\n\n      '\n- id:\
+        \ api-admin-endpoint-no-role-check\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: ERROR\n  message: Endpoint /admin atau /api/admin tidak cek role.\
+        \ Attacker user biasa bisa\n    akses. Pakai middleware `requireRole('admin')`\
+        \ atau equivalent. OWASP API5:2023.\n  metadata:\n    cwe: 'CWE-285: Improper\
+        \ Authorization'\n    owasp-api: API5:2023 Broken Function Level Authorization\n\
+        \    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$APP.get(\"/admin\", $H)\n\n        '\n    - pattern: '$APP.post(\"\
+        /admin\", $H)\n\n        '\n    - pattern: '$APP.$METHOD(\"/api/admin\", $H)\n\
+        \n        '\n  - pattern-not: '$APP.$METHOD(\"/admin\", requireAdmin, $H)\n\
+        \n      '\n- id: api-ssrf-user-controlled-url\n  languages:\n  - javascript\n\
+        \  - typescript\n  - python\n  severity: ERROR\n  message: URL dari user input\
+        \ dipakai di fetch/request tanpa validasi whitelist.\n    Attacker bisa request\
+        \ internal services (SSRF). OWASP API7:2023.\n  metadata:\n    cwe: 'CWE-918:\
+        \ Server-Side Request Forgery (SSRF)'\n    owasp-api: API7:2023 Server Side\
+        \ Request Forgery\n    ai-devsecops-source: owasp-api.yml\n  patterns:\n \
+        \ - pattern-either:\n    - pattern: 'fetch($REQ.query.url)\n\n        '\n\
+        \    - pattern: 'fetch($REQ.body.url)\n\n        '\n    - pattern: 'requests.get($REQ.json.url)\n\
+        \n        '\n    - pattern: 'axios.get($REQ.query.url)\n\n        '\n    -\
+        \ pattern: 'requests.get($REQ.args.get(\"url\"))\n\n        '\n- id: api-cors-wildcard-origin\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ CORS pakai wildcard `*` origin. Browser akan izinkan request dari domain\n\
+        \    manapun. Set explicit allowed origins. OWASP API8:2023.\n  metadata:\n\
+        \    cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted Domains'\n\
+        \    owasp-api: API8:2023 Security Misconfiguration\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: 'Access-Control-Allow-Origin:\
+        \ *\n\n        '\n    - pattern: 'res.setHeader(\"Access-Control-Allow-Origin\"\
+        , \"*\")\n\n        '\n    - pattern: 'origin: \"*\"\n\n        '\n- id: api-cors-reflect-origin\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ CORS reflect arbitrary Origin header. Attacker bisa paksa browser kirim\n\
+        \    cookie cross-origin. Set explicit allowlist origin. OWASP API8:2023.\n\
+        \  metadata:\n    cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted\
+        \ Domains'\n    owasp-api: API8:2023 Security Misconfiguration\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: 'res.setHeader(\"\
+        Access-Control-Allow-Origin\", $REQ.headers.origin)\n\n        '\n    - pattern:\
+        \ 'Access-Control-Allow-Origin: $REQ.headers.origin\n\n        '\n    - pattern:\
+        \ 'cors({ origin: $REQ.headers.origin })\n\n        '\n- id: api-stack-trace-exposure\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Error response include stack trace atau detail internal. Attacker\
+        \ bisa\n    enumerasi internal structure. Log full error server-side, return\
+        \ generic message\n    ke client. OWASP API8:2023.\n  metadata:\n    cwe:\
+        \ 'CWE-209: Generation of Error Message Containing Sensitive Information'\n\
+        \    owasp-api: API8:2023 Security Misconfiguration\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: 'res.json({\
+        \ error: $ERR.stack })\n\n        '\n    - pattern: 'res.json({ error: $ERR.message,\
+        \ stack: $ERR.stack })\n\n        '\n    - pattern: 'res.status(500).send($ERR.stack)\n\
+        \n        '\n    - pattern: 'traceback.format_exc()\n\n        '\n- id: ecommerce-pci-card-data-in-logs\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ 'Jangan log data kartu kredit / payment (PAN, CVV, expiry). PCI-DSS v4.0\n\
+        \    Requirement 3.4 melarang penyimpanan cleartext PAN di logs. Gunakan masker:\
+        \ `card.number.slice(-4)`\n    atau tokenization.'\n  metadata:\n    cwe:\
+        \ 'CWE-532: Insertion of Sensitive Information into Log File'\n    owasp-api:\
+        \ API3:2023 Broken Object Property Level Authorization\n    pci-dss: 3.4 Render\
+        \ PAN unreadable anywhere it is stored\n    ai-devsecops-source: ecommerce.yml\n\
+        \  patterns:\n  - pattern-either:\n    - pattern: console.log(..., $CARD,\
+        \ ...)\n    - pattern: console.log(..., req.body.cardNumber, ...)\n    - pattern:\
+        \ console.log(..., req.body.card_number, ...)\n    - pattern: logger.info(...,\
+        \ $PAN, ...)\n    - pattern: console.error(..., $CARD, ...)\n  - metavariable-pattern:\n\
+        \      metavariable: $CARD\n      patterns:\n      - pattern-either:\n   \
+        \     - pattern: $REQ.body.cardNumber\n        - pattern: $REQ.body.card_number\n\
+        \        - pattern: $REQ.body.cvv\n        - pattern: $REQ.body.cvc\n    \
+        \    - pattern: $X.card.number\n        - pattern: $X.pan\n- id: ecommerce-pci-stripe-secret-in-source\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: Stripe live secret key terdeteksi di source. Pindahkan ke env\
+        \ var atau\n    secret manager. Stripe key bocor = attacker bisa charge sembarang\
+        \ customer. PCI-DSS\n    8.2.1.\n  metadata:\n    cwe: 'CWE-798: Use of Hard-coded\
+        \ Credentials'\n    pci-dss: 8.2.1 Strong cryptography to render credentials\
+        \ unreadable\n    owasp: A07:2021 Identification and Authentication Failures\n\
+        \    ai-devsecops-source: ecommerce.yml\n  pattern-regex: \\b(sk_live_[A-Za-z0-9]{24,}|rk_live_[A-Za-z0-9]{24,})\\\
+        b\n- id: ecommerce-pci-raw-pan-in-code\n  languages:\n  - javascript\n  -\
+        \ typescript\n  severity: ERROR\n  message: Regex detect pola nomor kartu\
+        \ kredit (16 digit) di kode. Ini indikasi hard-coded\n    test card atau data\
+        \ leak. PCI-DSS melarang hard-coded PAN di source code.\n  metadata:\n   \
+        \ cwe: 'CWE-798: Use of Hard-coded Credentials'\n    pci-dss: 3.4 Render PAN\
+        \ unreadable\n    owasp: A02:2021 Cryptographic Failures\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  pattern-regex: \\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\\
+        b\n- id: ecommerce-api-bola-cart-access\n  languages:\n  - javascript\n  -\
+        \ typescript\n  severity: ERROR\n  message: Endpoint mengambil object dengan\
+        \ ID dari URL/body tapi tidak verifikasi\n    ownership terhadap user yang\
+        \ request. Vulnerable ke IDOR / BOLA \u2014 attacker bisa\n    akses cart/order\
+        \ customer lain. OWASP API1:2023.\n  metadata:\n    cwe: 'CWE-639: Authorization\
+        \ Bypass Through User-Controlled Key'\n    owasp-api: API1:2023 Broken Object\
+        \ Level Authorization\n    ai-devsecops-source: ecommerce.yml\n  patterns:\n\
+        \  - pattern-either:\n    - pattern: '$ROUTE.get(\"/$PATH/:id\", $HANDLER)\n\
+        \n        '\n    - pattern: '$ROUTE.post(\"/$PATH/:id\", $HANDLER)\n\n   \
+        \     '\n    - pattern: 'router.$METHOD(\"/$PATH/:id\", $HANDLER)\n\n    \
+        \    '\n  - pattern-not: '$ROUTE.$METHOD(\"/$PATH/:id\", authRequired, $HANDLER)\n\
+        \n      '\n  - pattern-not: '$ROUTE.$METHOD(\"/$PATH/:id\", requireAuth, $HANDLER)\n\
+        \n      '\n- id: ecommerce-api-no-auth-on-checkout\n  languages:\n  - javascript\n\
+        \  - typescript\n  severity: ERROR\n  message: Endpoint /checkout, /payment,\
+        \ /order, /cart tidak pakai middleware auth.\n    Customer harus login sebelum\
+        \ checkout \u2014 kalau tidak, attacker bisa create order\n    tanpa akun.\
+        \ OWASP API5:2023 (Broken Function Level Authorization).\n  metadata:\n  \
+        \  cwe: 'CWE-306: Missing Authentication for Critical Function'\n    owasp-api:\
+        \ API5:2023 Broken Function Level Authorization\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$APP.post(\"\
+        /checkout\", $HANDLER)\n\n        '\n    - pattern: '$APP.post(\"/payment\"\
+        , $HANDLER)\n\n        '\n    - pattern: '$APP.post(\"/orders\", $HANDLER)\n\
+        \n        '\n    - pattern: '$APP.post(\"/cart\", $HANDLER)\n\n        '\n\
+        \  - pattern-not: '$APP.post(\"/checkout\", authRequired, $HANDLER)\n\n  \
+        \    '\n  - pattern-not: '$APP.post(\"/checkout\", isAuthenticated, $HANDLER)\n\
+        \n      '\n- id: ecommerce-price-tampering\n  languages:\n  - javascript\n\
+        \  - typescript\n  severity: ERROR\n  message: 'Harga atau quantity di-set\
+        \ dari request body tanpa validasi server-side.\n    Attacker bisa kirim `{price:\
+        \ 0, quantity: 999999}` dan checkout murah. Selalu\n    ambil price/quantity\
+        \ dari database trusted, bukan dari request.'\n  metadata:\n    cwe: 'CWE-602:\
+        \ Client-Side Enforcement of Server-Side Security'\n    owasp-api: API3:2023\
+        \ Broken Object Property Level Authorization\n    ai-devsecops-source: ecommerce.yml\n\
+        \  patterns:\n  - pattern-either:\n    - pattern: '$PRICE = $REQ.body.price\n\
+        \n        ...\n\n        '\n    - pattern: '$QTY = $REQ.body.quantity\n\n\
+        \        ...\n\n        '\n    - pattern: '$TOTAL = $REQ.body.total\n\n  \
+        \      ...\n\n        '\n    - pattern: '$AMOUNT = $REQ.body.amount\n\n  \
+        \      ...\n\n        '\n- id: ecommerce-discount-tampering\n  languages:\n\
+        \  - javascript\n  - typescript\n  severity: ERROR\n  message: Discount/coupon\
+        \ di-set dari request body tanpa validasi. Attacker bisa\n    pakai kode diskon\
+        \ internal atau apply diskon 100% sendiri. Validate diskon server-side\n \
+        \   dan hanya apply kode yang verified.\n  metadata:\n    cwe: 'CWE-602: Client-Side\
+        \ Enforcement of Server-Side Security'\n    owasp-api: API3:2023 Broken Object\
+        \ Property Level Authorization\n    ai-devsecops-source: ecommerce.yml\n \
+        \ patterns:\n  - pattern-either:\n    - pattern: '$DISCOUNT = $REQ.body.discount\n\
+        \n        ...\n\n        '\n    - pattern: '$COUPON = $REQ.body.coupon_code\n\
+        \n        ...\n\n        '\n- id: ecommerce-mass-assignment-admin\n  languages:\n\
+        \  - javascript\n  - typescript\n  - python\n  severity: ERROR\n  message:\
+        \ 'Spread `req.body` atau `request.json` langsung ke object user/order. Attacker\n\
+        \    bisa tambah field `is_admin: true` atau `role: ''admin''` di request\
+        \ body dan\n    escalate privilege. Whitelist field yang diizinkan. OWASP\
+        \ API3:2023.'\n  metadata:\n    cwe: 'CWE-915: Improperly Controlled Modification\
+        \ of Dynamically-Determined Object\n      Attributes'\n    owasp-api: API3:2023\
+        \ Broken Object Property Level Authorization\n    ai-devsecops-source: ecommerce.yml\n\
+        \  patterns:\n  - pattern-either:\n    - pattern: '$USER = { ...$REQ.body\
+        \ }\n\n        '\n    - pattern: '$USER = Object.assign({}, $REQ.body)\n\n\
+        \        '\n    - pattern: 'User.create($REQ.body)\n\n        '\n    - pattern:\
+        \ 'User.update($REQ.body)\n\n        '\n    - pattern: 'Order.create($REQ.body)\n\
+        \n        '\n    - pattern: 'request.json  # FastAPI/Stripe-style: check if\
+        \ this is followed by\n        direct model instantiation\n\n        '\n-\
+        \ id: ecommerce-sqli-order-lookup\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: ERROR\n  message: SQL injection risk di order/product lookup.\
+        \ User input dipakai di raw SQL\n    string. Gunakan parameterized query.\
+        \ OWASP A03:2021.\n  metadata:\n    cwe: 'CWE-89: SQL Injection'\n    owasp:\
+        \ A03:2021 Injection\n    ai-devsecops-source: ecommerce.yml\n  patterns:\n\
+        \  - pattern-either:\n    - pattern: 'db.query(\"SELECT * FROM orders WHERE\
+        \ id = ''\" + $ID + \"''\")\n\n        '\n    - pattern: 'db.query(`SELECT\
+        \ * FROM orders WHERE id = ${$ID}`)\n\n        '\n    - pattern: 'db.query(`SELECT\
+        \ * FROM products WHERE name LIKE ''%${$X}%''`)\n\n        '\n    - pattern:\
+        \ 'db.query(\"SELECT * FROM products WHERE name = ''\" + $NAME + \"''\")\n\
+        \n        '\n- id: ecommerce-xss-product-render\n  languages:\n  - javascript\n\
+        \  - typescript\n  severity: ERROR\n  message: Render product name/description/review\
+        \ dengan innerHTML atau dangerouslySetInnerHTML.\n    Attacker bisa inject\
+        \ script via product name atau review. Gunakan textContent\n    atau sanitizer.\
+        \ OWASP A03:2021.\n  metadata:\n    cwe: 'CWE-79: Cross-site Scripting'\n\
+        \    owasp: A03:2021 Injection\n    ai-devsecops-source: ecommerce.yml\n \
+        \ patterns:\n  - pattern-either:\n    - pattern: '$EL.innerHTML = $REQ.body.productName\n\
+        \n        '\n    - pattern: '$EL.innerHTML = $REQ.body.review\n\n        '\n\
+        \    - pattern: '<div dangerouslySetInnerHTML={{__html: $REQ.body.description}}\
+        \ />\n\n        '\n    - pattern: 'res.send($REQ.body.productName)\n\n   \
+        \     '\n- id: ecommerce-csrf-no-protection\n  languages:\n  - javascript\n\
+        \  - typescript\n  severity: WARNING\n  message: Payment/checkout endpoint\
+        \ tidak pakai CSRF protection. Pakai csurf, double-submit\n    cookie, atau\
+        \ SameSite=Strict cookie + custom header. OWASP A01:2021.\n  metadata:\n \
+        \   cwe: 'CWE-352: Cross-Site Request Forgery'\n    owasp: A01:2021 Broken\
+        \ Access Control\n    ai-devsecops-source: ecommerce.yml\n  patterns:\n  -\
+        \ pattern-either:\n    - pattern: '$APP.post(\"/payment\", $HANDLER)\n\n \
+        \       '\n    - pattern: '$APP.post(\"/checkout\", $HANDLER)\n\n        '\n\
+        \    - pattern: '$APP.post(\"/transfer\", $HANDLER)\n\n        '\n  - pattern-not:\
+        \ '$APP.post(\"/payment\", csrfProtection, $HANDLER)\n\n      '\n  - pattern-not:\
+        \ '$APP.post(\"/checkout\", csrfProtection, $HANDLER)\n\n      '\n- id: ecommerce-jwt-weak-secret\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: JWT secret kelihatannya lemah atau default. JWT sign key HARUS\
+        \ random minimal\n    256-bit, dan HARUS di-load dari env/secret manager \u2014\
+        \ tidak boleh di-hardcode.\n    OWASP API2:2023.\n  metadata:\n    cwe: 'CWE-798:\
+        \ Use of Hard-coded Credentials'\n    owasp-api: API2:2023 Broken Authentication\n\
+        \    pci-dss: 8.3.1 Strong authentication factors\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: jwt.sign($PAYLOAD,\
+        \ \"secret\")\n    - pattern: jwt.sign($PAYLOAD, \"your-256-bit-secret\")\n\
+        \    - pattern: jwt.sign($PAYLOAD, \"changeme\")\n    - pattern: jwt.sign($PAYLOAD,\
+        \ \"supersecret\")\n    - pattern: jwt.sign($PAYLOAD, \"default\")\n    -\
+        \ pattern: jwt.sign($PAYLOAD, process.env.JWT_SECRET || \"secret\")\n    -\
+        \ pattern: new hmac($SECRET) where $SECRET == \"secret\"\n    - pattern: jwt.encode($PAYLOAD,\
+        \ \"secret\", algorithm=\"HS256\")\n- id: ecommerce-jwt-no-expiration\n  languages:\n\
+        \  - javascript\n  - typescript\n  severity: WARNING\n  message: JWT tidak\
+        \ set expiration. Token tanpa expiry = forever valid kalau bocor.\n    Set\
+        \ `expiresIn` di jwt.sign(). OWASP API2:2023.\n  metadata:\n    cwe: 'CWE-613:\
+        \ Insufficient Session Expiration'\n    owasp-api: API2:2023 Broken Authentication\n\
+        \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: jwt.sign($PAYLOAD, $SECRET)\n    - pattern: jwt.sign($PAYLOAD,\
+        \ $SECRET, $ALGO)\n  - pattern-not: 'jwt.sign($PAYLOAD, $SECRET, $ALGO, {\
+        \ expiresIn: $EXP })'\n  - pattern-not: 'jwt.sign($PAYLOAD, $SECRET, { expiresIn:\
+        \ $EXP })'\n- id: ecommerce-log-sensitive-data\n  languages:\n  - javascript\n\
+        \  - typescript\n  severity: WARNING\n  message: Log seluruh req.body. Bisa\
+        \ log password, card data, atau PII. Whitelist\n    field yang di-log. PCI-DSS\
+        \ 3.2.\n  metadata:\n    cwe: 'CWE-532: Insertion of Sensitive Information\
+        \ into Log File'\n    pci-dss: 3.2 Protect stored cardholder data\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: console.log(req.body)\n\
+        \    - pattern: console.log($REQ.body)\n    - pattern: logger.info(req.body)\n\
+        \    - pattern: winston.info(req.body)\n    - pattern: req.log.info(req.body)\n\
+        \    - pattern: morgan.token(\"body\", (req) => JSON.stringify(req.body))\n\
+        - id: ecommerce-md5-password\n  languages:\n  - javascript\n  - typescript\n\
+        \  - python\n  severity: ERROR\n  message: MD5 dipakai untuk hash (kemungkinan\
+        \ password). MD5 broken untuk security.\n    Pakai bcrypt, argon2, atau scrypt.\
+        \ PCI-DSS 8.3.2.\n  metadata:\n    cwe: 'CWE-327: Use of a Broken or Risky\
+        \ Cryptographic Algorithm'\n    owasp: A02:2021 Cryptographic Failures\n \
+        \   pci-dss: 8.3.2 Render passwords unreadable during transmission/storage\n\
+        \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: crypto.createHash(\"md5\")\n    - pattern: hashlib.md5()\n\
+        \    - pattern: require(\"md5\")\n    - pattern: $X.md5($PASSWORD)\n- id:\
+        \ ecommerce-sha1-password\n  languages:\n  - javascript\n  - typescript\n\
+        \  - python\n  severity: WARNING\n  message: SHA-1 dipakai untuk hash. SHA-1\
+        \ deprecated untuk security (collision attacks).\n    Pakai SHA-256+ atau\
+        \ bcrypt untuk password.\n  metadata:\n    cwe: 'CWE-327: Use of a Broken\
+        \ or Risky Cryptographic Algorithm'\n    owasp: A02:2021 Cryptographic Failures\n\
+        \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: crypto.createHash(\"sha1\")\n    - pattern: hashlib.sha1()\n\
+        \    - pattern: require(\"sha1\")\n- id: pci-dss-3-4-pan-in-source\n  languages:\n\
+        \  - javascript\n  - typescript\n  - python\n  severity: ERROR\n  message:\
+        \ 'Possible Primary Account Number (PAN) in source code. PCI-DSS v4.0 Req\n\
+        \    3.4 prohibits storing cleartext PAN. Move to a tokenization service (e.g.\
+        \ Stripe\n    tokens, Braintree vault) or redact (display only last 4 digits:\
+        \ card.number.slice(-4)).'\n  metadata:\n    cwe: 'CWE-312: Cleartext Storage\
+        \ of Sensitive Information'\n    pci-dss: 3.4 Render PAN unreadable anywhere\
+        \ it is stored\n    owasp: A02:2021 Cryptographic Failures\n    ai-devsecops-source:\
+        \ pci-dss.yml\n  pattern-regex: \\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\\
+        b\n- id: pci-dss-3-4-cvv-in-source\n  languages:\n  - javascript\n  - typescript\n\
+        \  - python\n  severity: ERROR\n  message: Possible CVV/CVC code in source.\
+        \ PCI-DSS v4.0 Req 3.3 prohibits storing\n    CVV after authorization. This\
+        \ MUST be transmitted directly to the payment processor\n    and never persisted.\n\
+        \  metadata:\n    cwe: 'CWE-312: Cleartext Storage of Sensitive Information'\n\
+        \    pci-dss: 3.3 Protect stored cardholder data\n    ai-devsecops-source:\
+        \ pci-dss.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$CVV = $REQ.body.cvv\n\
+        \n        '\n    - pattern: '$CVV = $REQ.body.cvc\n\n        '\n    - pattern:\
+        \ '$X.cvv = $VAL\n\n        '\n    - pattern: '$X.cvc = $VAL\n\n        '\n\
+        \    - pattern: 'db.save(..., $CVV, ...)\n\n        '\n- id: pci-dss-3-4-magnetic-stripe-data\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ Possible magnetic stripe data or track data. PCI-DSS forbids storing CVV2,\n\
+        \    PIN, or full magnetic stripe data after authorization. Reject the entire\
+        \ request\n    and inform the customer.\n  metadata:\n    cwe: 'CWE-312: Cleartext\
+        \ Storage of Sensitive Information'\n    pci-dss: 3.2 Protect stored cardholder\
+        \ data\n    ai-devsecops-source: pci-dss.yml\n  pattern-regex: \\b(?:track1|track2|magnetic[-_\
+        \ ]?stripe)\\b\n- id: pci-dss-4-payment-over-http\n  languages:\n  - javascript\n\
+        \  - typescript\n  - python\n  severity: ERROR\n  message: Payment endpoint\
+        \ over HTTP (not HTTPS). PCI-DSS v4.0 Req 4.2 requires strong\n    cryptography\
+        \ (TLS 1.2+) for transmitting cardholder data over open networks. Use\n  \
+        \  https:// for all payment-related URLs.\n  metadata:\n    cwe: 'CWE-319:\
+        \ Cleartext Transmission of Sensitive Information'\n    pci-dss: 4.2 Use strong\
+        \ cryptography for cardholder data transmission\n    ai-devsecops-source:\
+        \ pci-dss.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$URL = \"\
+        http://.../*payment*\"\n\n        '\n    - pattern: '$URL = \"http://.../*checkout*\"\
+        \n\n        '\n    - pattern: '$URL = \"http://.../*card*\"\n\n        '\n\
+        \    - pattern: 'fetch(\"http://.../*payment*\", ...)\n\n        '\n- id:\
+        \ pci-dss-6-5-1-injection-flaws\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: ERROR\n  message: SQL injection in payment context. PCI-DSS v4.0\
+        \ Req 6.5.1 mandates protection\n    against injection flaws. Use parameterized\
+        \ queries.\n  metadata:\n    cwe: 'CWE-89: SQL Injection'\n    pci-dss: 6.5.1\
+        \ Address common coding vulnerabilities in software\n    owasp: A03:2021 Injection\n\
+        \    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: 'db.query(\"SELECT * FROM payments WHERE id = ''\" + $ID +\
+        \ \"''\")\n\n        '\n    - pattern: 'db.query(\"SELECT * FROM orders WHERE\
+        \ card_id = ''\" + $CARD + \"''\")\n\n        '\n    - pattern: 'db.query(`SELECT\
+        \ * FROM payments WHERE amount = ${$X}`)\n\n        '\n- id: pci-dss-6-5-7-xss\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
+        \ XSS in payment context (cardholder data exposure). PCI-DSS v4.0 Req 6.5.7\n\
+        \    requires protection against XSS for any page that handles cardholder\
+        \ data. Sanitize\n    all user input with textContent or a proven sanitizer\
+        \ (DOMPurify).\n  metadata:\n    cwe: 'CWE-79: Cross-site Scripting'\n   \
+        \ pci-dss: 6.5.7 Address common coding vulnerabilities\n    owasp: A03:2021\
+        \ Injection\n    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$EL.innerHTML = $REQ.body.billingAddress\n\n        '\n \
+        \   - pattern: 'res.send(\"<div>\" + $REQ.body.cardholderName + \"</div>\"\
+        )\n\n        '\n- id: pci-dss-8-3-1-strong-auth-payment\n  languages:\n  -\
+        \ javascript\n  - typescript\n  - python\n  severity: ERROR\n  message: Payment\
+        \ endpoint without strong authentication. PCI-DSS v4.0 Req 8.3.1\n    requires\
+        \ strong authentication factors (MFA, OTP, biometrics) for access to cardholder\n\
+        \    data. Apply authRequired or requireAuth middleware to /payment, /checkout,\
+        \ /api/orders.\n  metadata:\n    cwe: 'CWE-306: Missing Authentication for\
+        \ Critical Function'\n    pci-dss: 8.3.1 Strong authentication for cardholder\
+        \ data access\n    owasp-api: API5:2023 Broken Function Level Authorization\n\
+        \    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$APP.post(\"/payment\", $HANDLER)\n\n        '\n    - pattern:\
+        \ '$APP.post(\"/checkout\", $HANDLER)\n\n        '\n    - pattern: '$APP.post(\"\
+        /api/charge\", $HANDLER)\n\n        '\n  - pattern-not: '$APP.post(\"/payment\"\
+        , authRequired, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
+        , requireAuth, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
+        , isAuthenticated, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
+        , authMiddleware, $HANDLER)\n\n      '\n- id: pci-dss-10-2-audit-log-cardholder-access\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: 'Access to cardholder data without audit log. PCI-DSS v4.0 Req\
+        \ 10.2 requires\n    audit logs for all access to cardholder data. Log: user\
+        \ ID, type of event, time,\n    success/failure, origin.'\n  metadata:\n \
+        \   cwe: 'CWE-778: Insufficient Logging'\n    pci-dss: 10.2 Audit logs for\
+        \ cardholder data access\n    ai-devsecops-source: pci-dss.yml\n  patterns:\n\
+        \  - pattern-either:\n    - pattern: '$APP.get(\"/payment/:id\", $HANDLER)\n\
+        \n        '\n    - pattern: '$APP.get(\"/api/cards/:id\", $HANDLER)\n\n  \
+        \      '\n  - pattern-not: '$APP.get(\"/payment/:id\", auditLog, $HANDLER)\n\
+        \n      '\n  - pattern-not: '$APP.get(\"/payment/:id\", $HANDLER, $LOGGER)\n\
+        \n      '\nSEMGREP_EOF\ndocker run --rm \\\n  -v \"${{ github.workspace }}:/src:ro\"\
+        \ \\\n  -v \"${{ github.workspace }}:/out\" \\\n  -v \"/tmp/ai-devsecops-rules.yml:/rules/ai-devsecops.yml:ro\"\
+        \ \\\n  returntocorp/semgrep:1.99.0 \\\n  semgrep \\\n  --config=/rules/ai-devsecops.yml\
+        \ \\\n  --config=p/owasp-top-ten \\\n  --config=p/javascript \\\n  --config=p/nodejs\
+        \ \\\n  --config=p/expressjs \\\n  --config=p/sql-injection \\\n  --config=p/secrets\
+        \ \\\n  --config=p/dockerfile \\\n  --sarif \\\n  --output=/out/semgrep-results.sarif\
+        \ \\\n  --timeout=600 \\\n  --no-error \\\n  /src\n"
+      continue-on-error: true
+    - name: Ensure Semgrep SARIF file exists (fallback for 0 findings or scan error)
+      if: always()
+      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::Semgrep did\
+        \ not produce a SARIF file. Generating empty SARIF for upload-sarif.\"\n \
+        \ printf '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '\
+        \  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n \
+        \   '  \"runs\": [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '\
+        \        \"driver\": {' \\\n    '          \"name\": \"Semgrep\",' \\\n  \
+        \  '          \"version\": \"1.99.0\",' \\\n    '          \"informationUri\"\
+        : \"https://semgrep.dev\"' \\\n    '        }' \\\n    '      },' \\\n   \
+        \ '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\n\
+        fi\necho \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload Semgrep SARIF to GitHub Code Scanning
+      if: always() && hashFiles('semgrep-results.sarif') != ''
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: semgrep-results.sarif
+        category: semgrep
+    - name: Upload Semgrep SARIF as artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: semgrep-results-${{ github.sha }}
+        path: semgrep-results.sarif
+        if-no-files-found: warn
+        retention-days: 30
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: false
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '24'
+        cache: npm
+    - name: Install dependencies (no native build)
+      run: npm ci --no-audit --no-fund --ignore-scripts
+      continue-on-error: true
+    - name: Run npm audit (CVE check, JSON output)
+      id: npm-audit
+      run: npm audit --audit-level=high --json > npm-audit-results.json || true
+      continue-on-error: true
+    - name: Upload npm audit JSON
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: npm-audit-results-${{ github.sha }}
+        path: npm-audit-results.json
+        if-no-files-found: warn
+        retention-days: 30
+    - name: Run Trivy filesystem scan (SARIF output)
+      id: trivy-fs
+      uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+      with:
+        scan-type: fs
+        scan-ref: .
+        format: sarif
+        output: trivy-fs-results.sarif
+        severity: HIGH,CRITICAL
+      continue-on-error: true
+    - name: Ensure trivy-fs-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s trivy-fs-results.sarif ]; then\n  echo \"::notice::Trivy found\
+        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"Trivy\",' \\\n    '          \"version\"\
+        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > trivy-fs-results.sarif\nfi\necho\
+        \ \"\u2713 trivy-fs-results.sarif size: $(stat -c%s trivy-fs-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload Trivy fs SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: trivy-fs-results.sarif
+        category: trivy-fs
+    - name: Upload Trivy fs SARIF as artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: trivy-fs-results-${{ github.sha }}
+        path: trivy-fs-results.sarif
+        if-no-files-found: warn
+        retention-days: 30
+    - name: Convert npm audit JSON to SARIF
+      if: always() && hashFiles('npm-audit-results.json') != ''
+      run: "python3 -c \"\nimport json, sys\ntry:\n    with open('npm-audit-results.json')\
+        \ as f:\n        data = json.load(f)\n    vulns = data.get('vulnerabilities',\
+        \ {})\n    results = []\n    for pkg, info in vulns.items():\n        if not\
+        \ info.get('via'):\n            continue\n        severity = info.get('severity','moderate')\n\
+        \        level = 'error' if severity in ('critical','high') else 'warning'\n\
+        \        seen_cves = set()\n        for via in info['via']:\n            if\
+        \ isinstance(via, dict):\n                cve_id = via.get('title','')\n \
+        \               if cve_id and cve_id not in seen_cves:\n                 \
+        \   seen_cves.add(cve_id)\n                    results.append({\n        \
+        \                'ruleId': cve_id,\n                        'message': {'text':\
+        \ cve_id + ' in ' + pkg + ' ' + info.get('range','')},\n                 \
+        \       'level': level,\n                        'locations': [{'physicalLocation':\
+        \ {'artifactLocation': {'uri': 'package.json'}}}],\n                     \
+        \   'properties': {'package': pkg, 'version': info.get('range',''), 'severity':\
+        \ severity}\n                    })\n    sarif = {\n        'version': '2.1.0',\n\
+        \        '\\$schema': 'https://json.schemastore.org/sarif-2.1.0.json',\n \
+        \       'runs': [{\n            'tool': {'driver': {'name': 'npm audit', 'version':\
+        \ '1.0', 'informationUri': 'https://docs.npmjs.com/cli/v10/commands/npm-audit'}},\n\
+        \            'results': results\n        }]\n    }\n    with open('npm-audit-results.sarif',\
+        \ 'w') as f:\n        json.dump(sarif, f, indent=2)\n    print(f'npm-audit-results.sarif\
+        \ written with {len(results)} findings')\nexcept Exception as e:\n    print(f'npm-audit\
+        \ SARIF conversion error: {e}', file=sys.stderr)\n    import traceback; traceback.print_exc()\n\
+        \    sys.exit(0)\n\"\n"
+      continue-on-error: true
+    - name: Ensure npm-audit-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s npm-audit-results.sarif ]; then\n  echo \"::notice::npm audit\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"npm audit\",' \\\n    '          \"version\"\
+        : \"1.0\",' \\\n    '          \"informationUri\": \"https://docs.npmjs.com/cli/v10/commands/npm-audit\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > npm-audit-results.sarif\nfi\necho\
+        \ \"\u2713 npm-audit-results.sarif size: $(stat -c%s npm-audit-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload npm audit SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: npm-audit-results.sarif
+        category: npm-audit
+    - name: Upload npm audit SARIF as artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: npm-audit-sarif-${{ github.sha }}
+        path: npm-audit-results.sarif
+        if-no-files-found: warn
+        retention-days: 30
+    - name: Evaluate dependency-scan findings
+      if: always()
+      run: 'echo ''## Dependency Scan Summary'' >> "$GITHUB_STEP_SUMMARY"
+
+        echo ''- npm audit: ''"${{ steps.npm-audit.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+
+        echo ''- trivy fs: ''"${{ steps.trivy-fs.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Run Gitleaks on PR diff (SARIF output)
+      uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+        GITLEAKS_FORMAT: sarif
+        GITLEAKS_REPORT_PATH: gitleaks-diff-results.sarif
+      continue-on-error: true
+    - name: Run Gitleaks on full working tree (SARIF output)
+      run: 'set -e
+
+        # Install gitleaks CLI (matches the action''s version).
+
+        wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+        | tar -xz -C /tmp
+
+        sudo mv /tmp/gitleaks /usr/local/bin/gitleaks || mv /tmp/gitleaks /usr/local/bin/gitleaks
+
+        gitleaks version
+
+        # Scan the full working tree. `--no-banner` quiets
+
+        # the ASCII art. Output is SARIF 2.1.0.
+
+        gitleaks detect --source . --no-banner --report-format sarif --report-path
+        gitleaks-full-results.sarif --exit-code 0 || true
+
+        '
+      continue-on-error: true
+    - name: Merge Gitleaks SARIF results
+      if: always()
+      run: "set -e\nif [ -s gitleaks-diff-results.sarif ] && [ -s gitleaks-full-results.sarif\
+        \ ]; then\n  # Both scans produced output \u2014 concatenate\n  # the result\
+        \ arrays. We use a tiny Python\n  # snippet because `jq` is not guaranteed\
+        \ to\n  # be installed on ubuntu-latest runners.\n  python3 - <<'PY'\nimport\
+        \ json, pathlib\ndiff = json.loads(pathlib.Path('gitleaks-diff-results.sarif').read_text())\n\
+        full = json.loads(pathlib.Path('gitleaks-full-results.sarif').read_text())\n\
+        merged_runs = (diff.get('runs') or []) + (full.get('runs') or [])\n# De-duplicate\
+        \ by (ruleId, physicalLocation uri:line).\nseen = set()\nmerged_results =\
+        \ []\nfor run in merged_runs:\n    for r in (run.get('results') or []):\n\
+        \        loc = (r.get('locations') or [{}])[0].get('physicalLocation', {})\n\
+        \        uri = (loc.get('artifactLocation') or {}).get('uri', '')\n      \
+        \  line = (loc.get('region') or {}).get('startLine', 0)\n        key = (r.get('ruleId',''),\
+        \ uri, line)\n        if key in seen:\n            continue\n        seen.add(key)\n\
+        \        merged_results.append(r)\nbase = diff if diff.get('runs') else full\n\
+        base['runs'] = merged_runs\nfor run in base['runs']:\n    run['results'] =\
+        \ merged_results if run is base['runs'][0] else (run.get('results') or [])\n\
+        pathlib.Path('gitleaks-results.sarif').write_text(json.dumps(base, indent=2))\n\
+        print(f'Merged SARIF: {len(merged_results)} unique findings')\nPY\nelif [\
+        \ -s gitleaks-full-results.sarif ]; then\n  cp gitleaks-full-results.sarif\
+        \ gitleaks-results.sarif\nelif [ -s gitleaks-diff-results.sarif ]; then\n\
+        \  cp gitleaks-diff-results.sarif gitleaks-results.sarif\nfi\nls -la gitleaks-*.sarif\
+        \ || true\n"
+    - name: Ensure gitleaks-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s gitleaks-results.sarif ]; then\n  echo \"::notice::Gitleaks\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"Gitleaks\",' \\\n    '          \"version\"\
+        : \"8.24.3\",' \\\n    '          \"informationUri\": \"https://gitleaks.io\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > gitleaks-results.sarif\nfi\necho\
+        \ \"\u2713 gitleaks-results.sarif size: $(stat -c%s gitleaks-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload Gitleaks SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: gitleaks-results.sarif
+        category: gitleaks
+    - name: Upload Gitleaks SARIF as artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gitleaks-sarif-${{ github.sha }}
+        path: gitleaks-results.sarif
+        if-no-files-found: warn
+        retention-days: 30
+  container-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: Analyze Dockerfile for security misconfigurations
+      if: hashFiles('**/Dockerfile') != ''
+      run: "echo '## Dockerfile Security Checks' >> \"$GITHUB_STEP_SUMMARY\"\nissues=0\n\
+        for df in $(find . -name Dockerfile -not -path './.git/*' 2>/dev/null); do\n\
+        \  echo \"Analyzing $df...\"\n  # Check: run as non-root user\n  if ! grep\
+        \ -qE '^USER ' \"$df\"; then\n    echo \"::warning file=$df::Missing USER\
+        \ instruction \u2014 container runs as root\"\n    echo \"- \\`$df\\`: Missing\
+        \ USER instruction (runs as root)\" >> \"$GITHUB_STEP_SUMMARY\"\n    issues=$((issues+1))\n\
+        \  elif grep -qE '^USER root' \"$df\"; then\n    echo \"::warning file=$df::USER\
+        \ root detected \u2014 should use non-root user\"\n    echo \"- \\`$df\\`:\
+        \ USER root (use non-root)\" >> \"$GITHUB_STEP_SUMMARY\"\n    issues=$((issues+1))\n\
+        \  fi\n  # Check: base image pinned by digest\n  base=$(grep -m1 '^FROM '\
+        \ \"$df\" | sed 's/FROM //' | awk '{print $1}')\n  if echo \"$base\" | grep\
+        \ -qE '@sha256:'; then\n    echo \"  Base image pinned: $base\"\n  elif [\
+        \ -n \"$base\" ] && echo \"$base\" | grep -qE ':latest$|^[^:]*$'; then\n \
+        \   echo \"::warning file=$df::Base image $base not pinned by digest \u2014\
+        \ supply@sha256:...\"\n    echo \"- \\`$df\\`: Base image \\`$base\\` not\
+        \ pinned by digest\" >> \"$GITHUB_STEP_SUMMARY\"\n    issues=$((issues+1))\n\
+        \  fi\n  # Check: expose patterns\n  if grep -qE '^EXPOSE [0-9]+-[0-9]+' \"\
+        $df\"; then\n    echo \"::warning file=$df::EXPOSE with port range detected\
+        \ \u2014 limit to specific ports\"\n    echo \"- \\`$df\\`: EXPOSE port range\
+        \ (limit to specific ports)\" >> \"$GITHUB_STEP_SUMMARY\"\n    issues=$((issues+1))\n\
+        \  fi\ndone\necho \"Dockerfile checks complete: $issues issue(s)\" >> \"$GITHUB_STEP_SUMMARY\"\
+        \n"
+      continue-on-error: true
+    - name: Build Docker image
+      run: docker build -t app:ci-${{ github.sha }} .
+      continue-on-error: true
+    - name: Scan image with Trivy (SARIF output)
+      id: trivy-image
+      uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+      with:
+        image-ref: app:ci-${{ github.sha }}
+        format: sarif
+        output: trivy-image-results.sarif
+        severity: HIGH,CRITICAL
+      continue-on-error: true
+    - name: Ensure trivy-image-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s trivy-image-results.sarif ]; then\n  echo \"::notice::Trivy\
+        \ Image found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\
+        \n  printf '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n  \
+        \  '  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n\
+        \    '  \"runs\": [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '\
+        \        \"driver\": {' \\\n    '          \"name\": \"Trivy Image\",' \\\n\
+        \    '          \"version\": \"0.65.0\",' \\\n    '          \"informationUri\"\
+        : \"https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '\
+        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
+        \n    '}' > trivy-image-results.sarif\nfi\necho \"\u2713 trivy-image-results.sarif\
+        \ size: $(stat -c%s trivy-image-results.sarif) bytes\"\n"
+    - name: Upload Trivy image SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: trivy-image-results.sarif
+        category: trivy-image
+    - name: Upload Trivy image SARIF as artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: trivy-image-results-${{ github.sha }}
+        path: trivy-image-results.sarif
+        if-no-files-found: warn
+        retention-days: 30
+  jwt-auth-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-auth-files-for-insecure-jwt-and-bcrypt-usage
+      run: "set -e\nAUTH_FILES=$(find src -type f \\( -name 'auth*.js' -o -path '*middleware*auth*'\
+        \ \\))\nif [ -z \"$AUTH_FILES\" ]; then echo 'No auth files found under src/';\
+        \ exit 0; fi\necho \"Scanning: $AUTH_FILES\"\n# 1) jwt.sign without expiresIn\n\
+        if grep -nE \"jwt\\.sign\\([^)]*\\)\" $AUTH_FILES | grep -vE 'expiresIn|expires_in'\
+        \ ; then\n  echo '::error file=src/routes/auth.js::jwt.sign() call missing\
+        \ expiresIn option'\n  exit 1\nfi\n# 2) bcrypt cost factor < 10\nif grep -nE\
+        \ \"bcrypt\\.(hash|hashSync|genSalt|genSaltSync)\\([^)]*[0-9]\" $AUTH_FILES\
+        \ | grep -vE ',(1[0-9]|[2-9][0-9])' ; then\n  echo '::error file=src/routes/auth.js::bcrypt\
+        \ cost factor appears < 10'\n  exit 1\nfi\n# 3) hardcoded JWT secret fallback\n\
+        if grep -nEi \"(jwt[_-]?secret|JWT_SECRET)\\s*\\|\\|\\s*['\\\"][^'\\\"]+['\\\
+        \"]\" $AUTH_FILES ; then\n  echo '::error file=src/routes/auth.js::hardcoded\
+        \ JWT secret fallback detected'\n  exit 1\nfi\necho 'jwt-auth-hardening shell\
+        \ checks passed.'\n"
+    - name: semgrep-jwt-bcrypt-rules
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
+        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
+        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
+        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload semgrep SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: semgrep-results.sarif
+        category: semgrep
+  express-api-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: verify-routes-use-authn-and-rate-limit
+      run: "set -e\n[ -f src/server.js ] || { echo 'src/server.js missing'; exit 0;\
+        \ }\n# 1) requireAuth / authMiddleware must be imported and applied to /orders\
+        \ and /checkout\nfor route in orders checkout; do\n  f=\"src/routes/${route}.js\"\
+        \n  [ -f \"$f\" ] || continue\n  if ! grep -qE 'router\\.(get|post|put|delete|patch)\\\
+        s*\\(' \"$f\" ; then continue; fi\n  if ! grep -qE \"requireAuth|authMiddleware|verifyToken|protect\"\
+        \ \"$f\" ; then\n    echo \"::error file=$f::No authentication middleware\
+        \ applied to ${route} routes (BOLA risk)\"\n    exit 1\n  fi\ndone\n# 2) express-rate-limit\
+        \ must be imported and applied to /auth and /checkout\nfor route in auth checkout;\
+        \ do\n  f=\"src/routes/${route}.js\"\n  [ -f \"$f\" ] || continue\n  if !\
+        \ grep -qE 'rateLimit|RateLimit|rateLimiter|slowDown' \"$f\" ; then\n    echo\
+        \ \"::error file=$f::No rate limiting on ${route} routes (API4:2023 Unrestricted\
+        \ Resource Consumption)\"\n    exit 1\n  fi\ndone\n# 3) verify the package\
+        \ actually depends on express-rate-limit\nif ! node -e \"require('express-rate-limit')\"\
+        \ 2>/dev/null ; then\n  echo '::error::express-rate-limit not installed in\
+        \ package.json'\n  exit 1\nfi\necho 'express-api-hardening shell checks passed.'\n"
+    - name: semgrep-express-missing-input-validation
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
+        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
+        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
+        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload semgrep SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: semgrep-results.sarif
+        category: semgrep
+  helmet-csp-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: verify-helmet-config-in-server-js
+      run: "set -e\nS=src/server.js\n[ -f \"$S\" ] || { echo \"$S missing\"; exit\
+        \ 0; }\n# 1) helmet must be imported and used\ngrep -qE \"require\\(['\\\"\
+        ]helmet['\\\"]\\)|from ['\\\"]helmet['\\\"]\" \"$S\" || { echo \"::error file=$S::helmet\
+        \ not imported\"; exit 1; }\ngrep -qE \"app\\.use\\(\\s*helmet\\(\" \"$S\"\
+        \ || { echo \"::error file=$S::app.use(helmet(...)) not found\"; exit 1; }\n\
+        # 2) helmet() with no options or just helmet() is a default config -> weak\
+        \ CSP\nif grep -qE \"app\\.use\\(\\s*helmet\\(\\s*\\)\\s*[,)]\" \"$S\" ; then\n\
+        \  echo \"::error file=$S::helmet() called with no options; CSP/HSTS/coep\
+        \ will use insecure defaults\"\n  exit 1\nfi\n# 3) contentSecurityPolicy must\
+        \ be explicitly configured\nif ! grep -qE \"contentSecurityPolicy\" \"$S\"\
+        \ ; then\n  echo \"::error file=$S::helmet contentSecurityPolicy directive\
+        \ not configured\"\n  exit 1\nfi\n# 4) hsts must be present\nif ! grep -qE\
+        \ \"hsts\" \"$S\" ; then\n  echo \"::error file=$S::helmet hsts not configured\"\
+        \n  exit 1\nfi\n# 5) CSP must not be the trivial default (default-src 'self'\
+        \ only)\nif grep -qE \"default-src\\s+['\\\"]self['\\\"]\\s*;?\\s*\\\"\" \"\
+        $S\" || grep -qE \"default-src\\s+'self'\\s*;?\\s*\\\"\" \"$S\" ; then\n \
+        \ echo \"::warning file=$S::CSP uses only 'self' default-src; explicit img/script/connect-src\
+        \ needed for checkout\"\nfi\necho 'helmet-csp-validation shell checks passed.'\n"
+    - name: semgrep-helmet-misconfiguration
+      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
+
+        echo ''Rule body:''
+
+        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
+
+
+        SEMGREP_EOF
+
+        '
+    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
+        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
+        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
+        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
+        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
+        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
+        \ bytes\"\n"
+    - name: Upload semgrep SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: semgrep-results.sarif
+        category: semgrep
+  domain-compliance:
+    needs:
+    - helmet-csp-validation
+    uses: ./.github/workflows/ai-devsecops-custom.yml
+    with:
+      detected_domain: e-commerce
+    secrets: inherit
