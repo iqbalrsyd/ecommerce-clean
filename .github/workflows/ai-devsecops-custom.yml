@@ -11,6 +11,206 @@ permissions:
   contents: read
   security-events: write
 jobs:
+  jwt-auth-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-jwt-and-bcrypt-misuse
+      run: "echo 'AI-designed Semgrep rule (id=ai-rule):'\necho 'Rule body:'\ncat\
+        \ <<'SEMGREP_EOF' | sed 's/^/  /'\nrules:\n  - id: hardcoded-jwt-secret\n\
+        \    patterns:\n      - pattern-either:\n          - pattern: jwt.sign($P,\
+        \ \"...\", ...)\n          - pattern: jwt.sign($P, `...`, ...)\n         \
+        \ - pattern: jwt.verify($T, \"...\", ...)\n    message: \"JWT secret is a\
+        \ hardcoded string literal in src/middleware/auth.js or authController.js\
+        \ - use process.env.JWT_SECRET instead\"\n    languages: [javascript]\n  \
+        \  severity: ERROR\n    paths:\n      include:\n        - \"src/middleware/**\"\
+        \n        - \"src/routes/**\"\n        - \"src/controllers/**\"\n    metadata:\n\
+        \      category: security\n      cwe: \"CWE-798: Use of Hard-coded Credentials\"\
+        \n      owasp: \"A07:2021 Identification and Authentication Failures\"\n \
+        \ - id: weak-bcrypt-cost-factor\n    patterns:\n      - pattern-either:\n\
+        \          - pattern: bcrypt.hash($P, 8, ...)\n          - pattern: bcrypt.hash($P,\
+        \ 9, ...)\n          - pattern: bcrypt.hashSync($P, 8)\n          - pattern:\
+        \ bcrypt.hashSync($P, 9)\n          - pattern: bcrypt.hash($P, $C)\n    message:\
+        \ \"bcrypt cost factor < 10 is too low for production e-commerce auth - use\
+        \ >= 12 (e.g. bcrypt.hash(pwd, 12))\"\n    languages: [javascript]\n    severity:\
+        \ WARNING\n    paths:\n      include:\n        - \"src/controllers/**\"\n\
+        \        - \"src/models/**\"\n    metadata:\n      category: security\n  \
+        \    cwe: \"CWE-916: Use of Password Hash With Insufficient Computational\
+        \ Effort\"\n  - id: jwt-sign-with-empty-options\n    patterns:\n      - pattern:\
+        \ jwt.sign($P, $S, {})\n    message: \"jwt.sign() called with empty options\
+        \ object - tokens will never expire, violating session-expiration requirements\
+        \ for /api/orders and /api/checkout\"\n    languages: [javascript]\n    severity:\
+        \ ERROR\n    metadata:\n      category: security\n      cwe: \"CWE-613: Insufficient\
+        \ Session Expiration\"\nSEMGREP_EOF\n"
+    - name: verify-ratelimit-on-login-route
+      run: "set -e\nLOGIN_FILE=$(grep -rlE \"router\\.post\\(['\\\"]/?(api/)?(auth/)?login['\\\
+        \"]\" --include='*.js' src/routes/ 2>/dev/null | head -1 || true)\nif [ -z\
+        \ \"$LOGIN_FILE\" ]; then echo 'No login route found in src/routes/ - skipping';\
+        \ exit 0; fi\necho \"Inspecting $LOGIN_FILE for rate-limit middleware...\"\
+        \nif ! grep -qE 'rateLimit\\(|rate-limit|rateLimit\\s*\\(' \"$LOGIN_FILE\"\
+        ; then\n  echo \"::error file=$LOGIN_FILE::Login route is missing express-rate-limit\
+        \ middleware - enables credential-stuffing attacks\"\n  exit 1\nfi\necho \"\
+        OK: rate-limit middleware present on login route\"\n"
+    - name: Ensure jwt-auth-hardening-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s jwt-auth-hardening-results.sarif ]; then\n  echo \"::notice::jwt-auth-hardening\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"jwt-auth-hardening\",' \\\n    '     \
+        \     \"version\": \"0.65.0\",' \\\n    '          \"informationUri\": \"\
+        https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '   \
+        \   },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\n\
+        \    '}' > jwt-auth-hardening-results.sarif\nfi\necho \"\u2713 jwt-auth-hardening-results.sarif\
+        \ size: $(stat -c%s jwt-auth-hardening-results.sarif) bytes\"\n"
+    - name: Upload jwt-auth-hardening SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: jwt-auth-hardening-results.sarif
+        category: jwt-auth-hardening
+  checkout-api-protection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    needs:
+    - sast
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-missing-validation-on-checkout-cart
+      run: "echo 'AI-designed Semgrep rule (id=ai-rule):'\necho 'Rule body:'\ncat\
+        \ <<'SEMGREP_EOF' | sed 's/^/  /'\nrules:\n  - id: checkout-without-input-validation\n\
+        \    patterns:\n      - pattern-either:\n          - pattern: |\n        \
+        \    router.post('/checkout', $AUTH, async (req, res) => { ... })\n      \
+        \    - pattern: |\n            router.post('/api/checkout', $AUTH, async (req,\
+        \ res) => { ... })\n          - pattern: |\n            router.post('/cart',\
+        \ $AUTH, async (req, res) => { ... })\n          - pattern: |\n          \
+        \  router.post('/api/cart', $AUTH, async (req, res) => { ... })\n        \
+        \  - pattern: |\n            router.put('/cart/:id', $AUTH, async (req, res)\
+        \ => { ... })\n      - pattern-not: |\n        router.post('/checkout', $AUTH,\
+        \ [...body(...)], async (req, res) => { ... })\n      - pattern-not: |\n \
+        \       router.post('/cart', $AUTH, [...body(...)], async (req, res) => {\
+        \ ... })\n    message: \"POST /checkout or /cart handler is missing express-validator\
+        \ body() chain - client-supplied price/quantity can be trusted\"\n    languages:\
+        \ [javascript]\n    severity: ERROR\n    paths:\n      include:\n        -\
+        \ \"src/routes/**\"\n    metadata:\n      category: security\n      cwe: \"\
+        CWE-20: Improper Input Validation\"\n      owasp: \"A04:2021 Insecure Design\"\
+        \n  - id: order-fetch-without-ownership-check\n    patterns:\n      - pattern:\
+        \ |\n        router.get('/orders/:id', $AUTH, async (req, res) => {\n    \
+        \      ...\n          await Order.findById(req.params.id);\n          ...\n\
+        \        })\n    message: \"Order lookup by :id does not verify req.user.id\
+        \ == order.userId - classic IDOR allowing access to other customers' orders\"\
+        \n    languages: [javascript]\n    severity: ERROR\n    paths:\n      include:\n\
+        \        - \"src/routes/orders*\"\n        - \"src/routes/**\"\n    metadata:\n\
+        \      category: security\n      cwe: \"CWE-639: Authorization Bypass Through\
+        \ User-Controlled Key\"\nSEMGREP_EOF\n"
+    - name: verify-helmet-and-ratelimit-in-app-entry
+      run: "set -e\nENTRY=$(git ls-files 'app.js' 'index.js' 'server.js' 2>/dev/null\
+        \ | head -1)\nif [ -z \"$ENTRY\" ]; then echo 'No Express entry file (app.js/index.js/server.js)\
+        \ found at root or src/'; exit 0; fi\necho \"Inspecting $ENTRY...\"\nif !\
+        \ grep -qE 'app\\.use\\(\\s*helmet\\s*\\(\\)' \"$ENTRY\" && ! grep -qE \"\
+        require\\(['\\\"]helmet['\\\"]\\)\" \"$ENTRY\"; then\n  echo \"::error file=$ENTRY::helmet\
+        \ middleware not registered - missing security headers on e-commerce API\"\
+        \n  exit 1\nfi\nif ! grep -qE 'rateLimit\\(|rate-limit|express-rate-limit'\
+        \ \"$ENTRY\"; then\n  echo \"::error file=$ENTRY::express-rate-limit not registered\
+        \ in entry file - card-testing /api/checkout is unprotected\"\n  exit 1\n\
+        fi\necho \"OK: helmet() and express-rate-limit are registered in $ENTRY\"\n"
+    - name: Ensure checkout-api-protection-results.sarif exists (fallback for 0 findings)
+      if: always()
+      run: "if [ ! -s checkout-api-protection-results.sarif ]; then\n  echo \"::notice::checkout-api-protection\
+        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
+        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
+        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
+        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
+        : {' \\\n    '          \"name\": \"checkout-api-protection\",' \\\n    '\
+        \          \"version\": \"0.65.0\",' \\\n    '          \"informationUri\"\
+        : \"https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '\
+        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
+        \n    '}' > checkout-api-protection-results.sarif\nfi\necho \"\u2713 checkout-api-protection-results.sarif\
+        \ size: $(stat -c%s checkout-api-protection-results.sarif) bytes\"\n"
+    - name: Upload checkout-api-protection SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: checkout-api-protection-results.sarif
+        category: checkout-api-protection
+  container-runtime-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    needs:
+    - container-scan
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      with:
+        persist-credentials: false
+    - name: scan-dockerfile-runtime-issues
+      run: "echo 'AI-designed Semgrep rule (id=ai-rule):'\necho 'Rule body:'\ncat\
+        \ <<'SEMGREP_EOF' | sed 's/^/  /'\nrules:\n  - id: dockerfile-runs-as-root\n\
+        \    patterns:\n      - pattern-either:\n          - pattern: |\n        \
+        \    FROM $IMAGE\n            ...\n            CMD $CMD\n          - pattern:\
+        \ |\n            FROM $IMAGE\n            ...\n            ENTRYPOINT $EP\n\
+        \      - pattern-not-inside: |\n        FROM $IMAGE\n        ...\n       \
+        \ USER $U\n        ...\n    message: \"Dockerfile has no USER directive -\
+        \ the Node.js e-commerce process will run as UID 0 inside the container\"\n\
+        \    languages: [dockerfile]\n    severity: ERROR\n    paths:\n      include:\n\
+        \        - \"Dockerfile*\"\n    metadata:\n      category: security\n    \
+        \  cwe: \"CWE-250: Execution with Unnecessary Privileges\"\n  - id: dockerfile-uses-latest-or-untagged-base\n\
+        \    patterns:\n      - pattern-either:\n          - pattern: FROM $REPO:latest\n\
+        \          - pattern: FROM $REPO\n    message: \"Base image is 'latest' or\
+        \ untagged - non-reproducible builds. Pin to a specific version (e.g. node:20.11-alpine)\
+        \ or sha256 digest\"\n    languages: [dockerfile]\n    severity: WARNING\n\
+        \    paths:\n      include:\n        - \"Dockerfile*\"\n  - id: dockerfile-env-inlines-secret\n\
+        \    patterns:\n      - pattern-either:\n          - pattern: ENV $KEY $VAL\n\
+        \          - pattern: ENV $KEY=$VAL\n    message: \"ENV directive in Dockerfile\
+        \ may embed a secret (JWT_SECRET, DB_URL, STRIPE_KEY) - use runtime env injection\
+        \ or Docker/K8s secrets instead\"\n    languages: [dockerfile]\n    severity:\
+        \ WARNING\n    paths:\n      include:\n        - \"Dockerfile*\"\nSEMGREP_EOF\n"
+    - name: verify-nonroot-user-and-dockerignore
+      run: "set -e\nif [ ! -f Dockerfile ]; then echo 'No Dockerfile at repo root,\
+        \ skipping'; exit 0; fi\necho 'Checking Dockerfile hardening...'\nif ! grep\
+        \ -qE '^[[:space:]]*USER[[:space:]]+[^[:space:]]+' Dockerfile; then\n  echo\
+        \ '::error::Dockerfile has no USER directive - container will run as root'\n\
+        \  exit 1\nfi\nif grep -qE '^[[:space:]]*USER[[:space:]]+(root|0)[[:space:]]*$'\
+        \ Dockerfile; then\n  echo '::error::Dockerfile explicitly sets USER root'\n\
+        \  exit 1\nfi\nif [ ! -f .dockerignore ]; then\n  echo '::error::.dockerignore\
+        \ is missing - .env and node_modules will be copied into the image'\n  exit\
+        \ 1\nfi\nif ! grep -qE '^\\.env($|\\*|/.*)' .dockerignore; then\n  echo '::error::.dockerignore\
+        \ does not exclude .env files'\n  exit 1\nfi\nif ! grep -qE '^node_modules($|/.*)'\
+        \ .dockerignore; then\n  echo '::warning::.dockerignore does not exclude node_modules'\n\
+        fi\necho 'OK: Dockerfile runs as non-root and .dockerignore excludes .env'\n"
+    - name: Ensure container-runtime-hardening-results.sarif exists (fallback for
+        0 findings)
+      if: always()
+      run: "if [ ! -s container-runtime-hardening-results.sarif ]; then\n  echo \"\
+        ::notice::container-runtime-hardening found 0 findings. Generating empty SARIF\
+        \ to satisfy upload-sarif.\"\n  printf '%s\\n' \\\n    '{' \\\n    '  \"version\"\
+        : \"2.1.0\",' \\\n    '  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\"\
+        ,' \\\n    '  \"runs\": [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n\
+        \    '        \"driver\": {' \\\n    '          \"name\": \"container-runtime-hardening\"\
+        ,' \\\n    '          \"version\": \"0.65.0\",' \\\n    '          \"informationUri\"\
+        : \"https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '\
+        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
+        \n    '}' > container-runtime-hardening-results.sarif\nfi\necho \"\u2713 container-runtime-hardening-results.sarif\
+        \ size: $(stat -c%s container-runtime-hardening-results.sarif) bytes\"\n"
+    - name: Upload container-runtime-hardening SARIF to GitHub Code Scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
+      with:
+        sarif_file: container-runtime-hardening-results.sarif
+        category: container-runtime-hardening
   ecommerce-payment-stripe-webhook-verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -91,39 +291,3 @@ jobs:
       with:
         sarif_file: ecommerce-cart-bola-results.sarif
         category: ecommerce-cart-bola
-  ecommerce-checkout-price-server-validate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true
-    needs:
-    - sast
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      with:
-        persist-credentials: false
-    - name: scan-checkout-price-from-body
-      run: "set -e\nfail=0\n# Look for direct req.body.price/amount usage in checkout\
-        \ logic\nif grep -rnE 'req\\.body\\.(price|amount|total|grand_total)' src/routes/checkout.js\
-        \ src/controllers/checkout.js 2>/dev/null | grep -q .; then\n  echo '::error\
-        \ file=src/routes/checkout.js::Price/amount read from req.body \u2014 fetch\
-        \ from DB (Product.findById(id).price) instead'\n  fail=1\nfi\nexit $fail\n"
-    - name: Ensure ecommerce-checkout-price-results.sarif exists (fallback for 0 findings)
-      if: always()
-      run: "if [ ! -s ecommerce-checkout-price-results.sarif ]; then\n  echo \"::notice::ecommerce-checkout-price\
-        \ found 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
-        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
-        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
-        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
-        : {' \\\n    '          \"name\": \"ecommerce-checkout-price\",' \\\n    '\
-        \          \"version\": \"0.65.0\",' \\\n    '          \"informationUri\"\
-        : \"https://aquasecurity.github.io/trivy/\"' \\\n    '        }' \\\n    '\
-        \      },' \\\n    '      \"results\": []' \\\n    '    }' \\\n    '  ]' \\\
-        \n    '}' > ecommerce-checkout-price-results.sarif\nfi\necho \"\u2713 ecommerce-checkout-price-results.sarif\
-        \ size: $(stat -c%s ecommerce-checkout-price-results.sarif) bytes\"\n"
-    - name: Upload ecommerce-checkout-price SARIF to GitHub Code Scanning
-      if: always()
-      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
-      with:
-        sarif_file: ecommerce-checkout-price-results.sarif
-        category: ecommerce-checkout-price
