@@ -181,29 +181,168 @@ jobs:
         \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: 'res.json({\
         \ error: $ERR.stack })\n\n        '\n    - pattern: 'res.json({ error: $ERR.message,\
         \ stack: $ERR.stack })\n\n        '\n    - pattern: 'res.status(500).send($ERR.stack)\n\
-        \n        '\n    - pattern: 'traceback.format_exc()\n\n        '\n- id: ecommerce-pci-card-data-in-logs\n\
-        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
-        \ 'Jangan log data kartu kredit / payment (PAN, CVV, expiry). PCI-DSS v4.0\n\
-        \    Requirement 3.4 melarang penyimpanan cleartext PAN di logs. Gunakan masker:\
-        \ `card.number.slice(-4)`\n    atau tokenization.'\n  metadata:\n    cwe:\
-        \ 'CWE-532: Insertion of Sensitive Information into Log File'\n    owasp-api:\
-        \ API3:2023 Broken Object Property Level Authorization\n    pci-dss: 3.4 Render\
-        \ PAN unreadable anywhere it is stored\n    ai-devsecops-source: ecommerce.yml\n\
-        \  patterns:\n  - pattern-either:\n    - pattern: console.log(..., $CARD,\
-        \ ...)\n    - pattern: console.log(..., req.body.cardNumber, ...)\n    - pattern:\
-        \ console.log(..., req.body.card_number, ...)\n    - pattern: logger.info(...,\
-        \ $PAN, ...)\n    - pattern: console.error(..., $CARD, ...)\n  - metavariable-pattern:\n\
-        \      metavariable: $CARD\n      patterns:\n      - pattern-either:\n   \
-        \     - pattern: $REQ.body.cardNumber\n        - pattern: $REQ.body.card_number\n\
-        \        - pattern: $REQ.body.cvv\n        - pattern: $REQ.body.cvc\n    \
-        \    - pattern: $X.card.number\n        - pattern: $X.pan\n- id: ecommerce-pci-stripe-secret-in-source\n\
+        \n        '\n    - pattern: 'traceback.format_exc()\n\n        '\n- id: api-no-content-length-limit\n\
+        \  languages:\n  - javascript\n  - typescript\n  severity: WARNING\n  message:\
+        \ 'Upload endpoint tanpa `Content-Length` atau `busboy` `limits` option.\n\
+        \    Attacker bisa kirim payload sangat besar untuk DoS. Set explicit limit\
+        \ (busboy({\n    limits: { fileSize: ... }}) atau multer limits). OWASP API4:2023.'\n\
+        \  metadata:\n    cwe: 'CWE-770: Allocation of Resources Without Limits or\
+        \ Throttling'\n    owasp-api: API4:2023 Unrestricted Resource Consumption\n\
+        \    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: 'upload.single(...)\n\n        '\n    - pattern: 'upload.array(...)\n\
+        \n        '\n    - pattern: 'busboy(...)\n\n        '\n  - pattern-not: 'upload.single($FIELD,\
+        \ { limits: ... })\n\n      '\n  - pattern-not: 'upload.array($N, { limits:\
+        \ ... })\n\n      '\n  - pattern-not: 'busboy({ limits: ... })\n\n      '\n\
+        - id: api-find-all-without-limit\n  languages:\n  - javascript\n  - typescript\n\
+        \  - python\n  severity: WARNING\n  message: ORM call `find()`, `findAll()`,\
+        \ `all()`, `objects.all()` tanpa `.limit()`/`.slice()`\n    akan me-return\
+        \ seluruh tabel. Pakai pagination (limit/offset atau cursor) untuk\n    endpoint\
+        \ list. OWASP API4:2023.\n  metadata:\n    cwe: 'CWE-770: Allocation of Resources\
+        \ Without Limits or Throttling'\n    owasp-api: API4:2023 Unrestricted Resource\
+        \ Consumption\n    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$MODEL.find({...})\n\n        '\n    - pattern: '$MODEL.findAll({...})\n\
+        \n        '\n    - pattern: '$MODEL.objects.all()\n\n        '\n    - pattern:\
+        \ '$DB.query(\"SELECT * FROM $TBL\")\n\n        '\n  - pattern-not: '$MODEL.find({...}).limit($L)\n\
+        \n      '\n  - pattern-not: '$MODEL.findAll({...}).limit($L)\n\n      '\n\
+        \  - pattern-not: '$MODEL.findAll({..., limit: $L, ...})\n\n      '\n  - pattern-not:\
+        \ '$MODEL.findAll({..., take: $L, ...})\n\n      '\n- id: api-no-timeout-on-external-call\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: 'External HTTP call (fetch, axios, requests) tanpa timeout eksplisit.\
+        \ Jika\n    upstream hang, worker thread/process juga hang dan DoS. Set `timeout:\
+        \ 5000` (axios)\n    atau `AbortController` (fetch). OWASP API4:2023.'\n \
+        \ metadata:\n    cwe: 'CWE-400: Uncontrolled Resource Consumption'\n    owasp-api:\
+        \ API4:2023 Unrestricted Resource Consumption\n    ai-devsecops-source: owasp-api.yml\n\
+        \  patterns:\n  - pattern-either:\n    - pattern: 'axios.get($URL, $OPTS)\n\
+        \n        '\n    - pattern: 'axios.post($URL, $DATA, $OPTS)\n\n        '\n\
+        \    - pattern: 'requests.get($URL)\n\n        '\n    - pattern: 'requests.post($URL,\
+        \ $DATA)\n\n        '\n    - pattern: 'fetch($URL)\n\n        '\n  - pattern-not:\
+        \ 'axios.get($URL, { timeout: ... })\n\n      '\n  - pattern-not: 'axios.get($URL,\
+        \ {timeout: ...})\n\n      '\n  - pattern-not: 'requests.get($URL, timeout=...)\n\
+        \n      '\n  - pattern-not: 'fetch($URL, { signal: ... })\n\n      '\n- id:\
+        \ api-jwt-algorithm-none\n  languages:\n  - javascript\n  - typescript\n \
+        \ - python\n  severity: ERROR\n  message: 'JWT dengan `algorithm: ''none''`\
+        \ atau tanpa `algorithms` list. Attacker\n    bisa forge token. Selalu specify\
+        \ allowed algorithms (`HS256`, `RS256`, etc). OWASP\n    API2:2023.'\n  metadata:\n\
+        \    cwe: 'CWE-347: Improper Verification of Cryptographic Signature'\n  \
+        \  owasp-api: API2:2023 Broken Authentication\n    ai-devsecops-source: owasp-api.yml\n\
+        \  pattern-regex: jwt\\.(?:verify|decode)\\s*\\([^)]*(?:algorithm\\s*[:=]\\\
+        s*[\"']none[\"'])|verify\\s*\\(\\s*[^,]+,\\s*[^,]+,\\s*\\{\\s*algorithms?\\\
+        s*:\\s*\\[\\s*[\"']none[\"']\n- id: api-password-plaintext-compare\n  languages:\n\
+        \  - javascript\n  - typescript\n  - python\n  severity: ERROR\n  message:\
+        \ Perbandingan password / token dengan `==` atau `===` rentan timing attack.\n\
+        \    Pakai `crypto.timingSafeEqual` (Node) atau `hmac.compare_digest` (Python).\
+        \ OWASP\n    API2:2023.\n  metadata:\n    cwe: 'CWE-208: Observable Timing\
+        \ Discrepancy'\n    owasp-api: API2:2023 Broken Authentication\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  patterns:\n  - pattern-either:\n    - pattern: 'if ($PWD\
+        \ == $STORED) { ... }\n\n        '\n    - pattern: 'if ($PWD === $STORED)\
+        \ { ... }\n\n        '\n    - pattern: 'if $PWD == $STORED:\n\n        '\n\
+        \    - pattern: 'if $PWD == $STORED:\n\n        '\n- id: api-no-https-redirect\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Login / register / reset-password endpoint tanpa schema check\
+        \ (https).\n    Pakai helmet's `hsts()`, Flask-Talisman, atau manual redirect\
+        \ ke https sebelum\n    serving credentials. OWASP API2:2023.\n  metadata:\n\
+        \    cwe: 'CWE-319: Cleartext Transmission of Sensitive Information'\n   \
+        \ owasp-api: API2:2023 Broken Authentication\n    ai-devsecops-source: owasp-api.yml\n\
+        \  pattern-regex: (?:app\\.(post|put)\\s*\\(\\s*[\"'][\\'/]?(login|register|reset-password|forgot-password)|url_for\\\
+        s*\\(\\s*[\"']login|path\\s*=\\s*[\"']/login)\n- id: api-integer-id-trust\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Endpoint menggunakan integer ID (`:id`) untuk akses resource tanpa\
+        \ signed\n    token atau UUID. Attacker bisa enumerasi seluruh resource dengan\
+        \ sequential scanning.\n    OWASP API1:2023.\n  metadata:\n    cwe: 'CWE-639:\
+        \ Authorization Bypass Through User-Controlled Key'\n    owasp-api: API1:2023\
+        \ Broken Object Level Authorization\n    ai-devsecops-source: owasp-api.yml\n\
+        \  pattern-regex: \\.get\\s*\\(\\s*[\"'][^\"']*/:id[\"']\n- id: api-pagination-no-total\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: INFO\n\
+        \  message: List endpoint harus return total count (`X-Total-Count` header\
+        \ atau `meta.total`)\n    supaya client bisa render pagination. Tanpa itu,\
+        \ infinite-scroll / next-page flow\n    rusak. OWASP API3:2023.\n  metadata:\n\
+        \    cwe: 'CWE-1295: Debug Messages Revealing Unnecessary Information'\n \
+        \   owasp-api: API3:2023 Broken Object Property Level Authorization\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  pattern-regex: res\\.json\\s*\\(\\s*(\\w+)\\s*\\)\n- id:\
+        \ api-allow-method-on-objects\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: ERROR\n  message: 'Spread user input langsung ke object yang\
+        \ akan disimpan: `{...req.body}`\n    atau `Object.assign(target, req.body)`.\
+        \ Attacker bisa set field privilege (is_admin,\n    role, balance) via mass\
+        \ assignment. Whitelist allowed fields. OWASP API3:2023.'\n  metadata:\n \
+        \   cwe: 'CWE-915: Improperly Controlled Modification of Dynamically-Determined\
+        \ Object\n      Attributes'\n    owasp-api: API3:2023 Broken Object Property\
+        \ Level Authorization\n    ai-devsecops-source: owasp-api.yml\n  patterns:\n\
+        \  - pattern-either:\n    - pattern: 'const $X = { ...$REQ.body }\n\n    \
+        \    '\n    - pattern: 'let $X = { ...$REQ.body }\n\n        '\n    - pattern:\
+        \ '$X = { ...$REQ.body }\n\n        '\n    - pattern: 'Object.assign($TARGET,\
+        \ $REQ.body)\n\n        '\n    - pattern: 'Object.assign({}, $REQ.body)\n\n\
+        \        '\n    - pattern: '_extends({}, $REQ.body)\n\n        '\n- id: api-send-user-object\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Response kirim seluruh user/model object ke client tanpa whitelist.\
+        \ Field\n    sensitif (password_hash, internal flags, PII) bisa terekspos.\
+        \ Gunakan explicit\n    DTO / pick fields. OWASP API3:2023.\n  metadata:\n\
+        \    cwe: 'CWE-213: Exposure of Sensitive Information Due to Incompatible\
+        \ Policies'\n    owasp-api: API3:2023 Broken Object Property Level Authorization\n\
+        \    ai-devsecops-source: owasp-api.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: 'res.json($USER)\n\n        '\n    - pattern: 'res.json({\
+        \ user: $USER })\n\n        '\n    - pattern: 'res.json({...$USER})\n\n  \
+        \      '\n    - pattern: 'return $USER\n\n        '\n    - pattern: 'return\
+        \ User(**$DATA)\n\n        '\n    - pattern: 'return $MODEL.to_dict()\n\n\
+        \        '\n- id: api-delete-without-confirm\n  languages:\n  - javascript\n\
+        \  - typescript\n  - python\n  severity: WARNING\n  message: 'DELETE endpoint\
+        \ tidak require konfirmasi (header `X-Confirm-Delete` atau\n    body `confirm:\
+        \ true`). Attacker bisa trigger delete via CSRF atau user yang tidak\n   \
+        \ sengaja klik. OWASP API5:2023.'\n  metadata:\n    cwe: 'CWE-840: Business\
+        \ Logic Errors'\n    owasp-api: API5:2023 Broken Function Level Authorization\n\
+        \    ai-devsecops-source: owasp-api.yml\n  pattern-regex: \\.(delete|remove|destroy)\\\
+        s*\\(\\s*[\"'][^\"']*[\"']\\s*,\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>\n- id:\
+        \ api-elevated-no-2fa\n  languages:\n  - javascript\n  - typescript\n  - python\n\
+        \  severity: WARNING\n  message: Endpoint privilege-elevation (admin, role\
+        \ change, password reset) tanpa\n    2FA / step-up auth. OWASP API5:2023.\n\
+        \  metadata:\n    cwe: 'CWE-287: Improper Authentication'\n    owasp-api:\
+        \ API5:2023 Broken Function Level Authorization\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  pattern-regex: \\.(post|put|patch)\\s*\\(\\s*[\"'][^\"\
+        ']*(?:admin|role|grant|elevate|promote|change-password|reset-password)\n-\
+        \ id: api-ssrf-aws-metadata\n  languages:\n  - javascript\n  - typescript\n\
+        \  - python\n  severity: ERROR\n  message: Request ke AWS/GCP metadata endpoint\
+        \ `169.254.169.254` atau `metadata.google.internal`\n    di-expose via user\
+        \ input. Attacker bisa curi IAM credentials / tokens. OWASP API7:2023.\n \
+        \ metadata:\n    cwe: 'CWE-918: Server-Side Request Forgery (SSRF)'\n    owasp-api:\
+        \ API7:2023 Server Side Request Forgery\n    ai-devsecops-source: owasp-api.yml\n\
+        \  pattern-regex: (?:169\\.254\\.169\\.254|metadata\\.google\\.internal|metadata\\\
+        .internal)\n- id: api-version-exposure\n  languages:\n  - javascript\n  -\
+        \ typescript\n  - python\n  severity: INFO\n  message: Response header `X-Powered-By`\
+        \ atau `Server` di-expose ke client. Berikan\n    info stack version yang\
+        \ attacker bisa pakai untuk exploit known CVE. Disable.\n    OWASP API9:2023.\n\
+        \  metadata:\n    cwe: 'CWE-200: Exposure of Sensitive Information to an Unauthorized\
+        \ Actor'\n    owasp-api: API9:2023 Improper Inventory Management\n    ai-devsecops-source:\
+        \ owasp-api.yml\n  pattern-regex: (?:res\\.setHeader\\s*\\(\\s*[\"']X-Powered-By[\"\
+        ']|X-Powered-By\\s*[:=]|app\\.use\\s*\\(\\s*[\"']morgan\\s*[\"'])\n- id: api-debug-mode\n\
         \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
-        \  message: Stripe live secret key terdeteksi di source. Pindahkan ke env\
-        \ var atau\n    secret manager. Stripe key bocor = attacker bisa charge sembarang\
-        \ customer. PCI-DSS\n    8.2.1.\n  metadata:\n    cwe: 'CWE-798: Use of Hard-coded\
-        \ Credentials'\n    pci-dss: 8.2.1 Strong cryptography to render credentials\
-        \ unreadable\n    owasp: A07:2021 Identification and Authentication Failures\n\
-        \    ai-devsecops-source: ecommerce.yml\n  pattern-regex: \\b(sk_live_[A-Za-z0-9]{24,}|rk_live_[A-Za-z0-9]{24,})\\\
+        \  message: Debug mode aktif di production (Flask `debug=True`, Express `NODE_ENV=development`,\n\
+        \    atau Django `DEBUG = True`). Pakai env var `DEBUG=0` / `FLASK_DEBUG=0`\
+        \ di production.\n    OWASP API9:2023.\n  metadata:\n    cwe: 'CWE-489: Active\
+        \ Debug Code'\n    owasp-api: API9:2023 Improper Inventory Management\n  \
+        \  ai-devsecops-source: owasp-api.yml\n  pattern-regex: (?:debug\\s*=\\s*True|FLASK_DEBUG\\\
+        s*=\\s*1|NODE_ENV\\s*[:=]\\s*[\"']development[\"']|DEBUG\\s*=\\s*True)\n-\
+        \ id: ecommerce-pci-card-data-in-logs\n  languages:\n  - javascript\n  - typescript\n\
+        \  severity: ERROR\n  message: 'Jangan log data kartu kredit / payment (PAN,\
+        \ CVV, expiry). PCI-DSS v4.0\n    Requirement 3.4 melarang penyimpanan cleartext\
+        \ PAN di logs. Gunakan masker: `card.number.slice(-4)`\n    atau tokenization.'\n\
+        \  metadata:\n    cwe: 'CWE-532: Insertion of Sensitive Information into Log\
+        \ File'\n    owasp-api: API3:2023 Broken Object Property Level Authorization\n\
+        \    pci-dss: 3.4 Render PAN unreadable anywhere it is stored\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: console.log(...,\
+        \ $CARD, ...)\n    - pattern: console.log(..., req.body.cardNumber, ...)\n\
+        \    - pattern: console.log(..., req.body.card_number, ...)\n    - pattern:\
+        \ logger.info(..., $PAN, ...)\n    - pattern: console.error(..., $CARD, ...)\n\
+        \  - metavariable-pattern:\n      metavariable: $CARD\n      patterns:\n \
+        \     - pattern-either:\n        - pattern: $REQ.body.cardNumber\n       \
+        \ - pattern: $REQ.body.card_number\n        - pattern: $REQ.body.cvv\n   \
+        \     - pattern: $REQ.body.cvc\n        - pattern: $X.card.number\n      \
+        \  - pattern: $X.pan\n- id: ecommerce-pci-stripe-secret-in-source\n  languages:\n\
+        \  - javascript\n  - typescript\n  - python\n  severity: ERROR\n  message:\
+        \ Stripe live secret key terdeteksi di source. Pindahkan ke env var atau\n\
+        \    secret manager. Stripe key bocor = attacker bisa charge sembarang customer.\
+        \ PCI-DSS\n    8.2.1.\n  metadata:\n    cwe: 'CWE-798: Use of Hard-coded Credentials'\n\
+        \    pci-dss: 8.2.1 Strong cryptography to render credentials unreadable\n\
+        \    owasp: A07:2021 Identification and Authentication Failures\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  pattern-regex: \\b(sk_live_[A-Za-z0-9]{24,}|rk_live_[A-Za-z0-9]{24,})\\\
         b\n- id: ecommerce-pci-raw-pan-in-code\n  languages:\n  - javascript\n  -\
         \ typescript\n  severity: ERROR\n  message: Regex detect pola nomor kartu\
         \ kredit (16 digit) di kode. Ini indikasi hard-coded\n    test card atau data\
@@ -347,88 +486,108 @@ jobs:
         \ or Risky Cryptographic Algorithm'\n    owasp: A02:2021 Cryptographic Failures\n\
         \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
         \    - pattern: crypto.createHash(\"sha1\")\n    - pattern: hashlib.sha1()\n\
-        \    - pattern: require(\"sha1\")\n- id: pci-dss-3-4-pan-in-source\n  languages:\n\
-        \  - javascript\n  - typescript\n  - python\n  severity: ERROR\n  message:\
-        \ 'Possible Primary Account Number (PAN) in source code. PCI-DSS v4.0 Req\n\
-        \    3.4 prohibits storing cleartext PAN. Move to a tokenization service (e.g.\
-        \ Stripe\n    tokens, Braintree vault) or redact (display only last 4 digits:\
-        \ card.number.slice(-4)).'\n  metadata:\n    cwe: 'CWE-312: Cleartext Storage\
-        \ of Sensitive Information'\n    pci-dss: 3.4 Render PAN unreadable anywhere\
-        \ it is stored\n    owasp: A02:2021 Cryptographic Failures\n    ai-devsecops-source:\
-        \ pci-dss.yml\n  pattern-regex: \\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\\
-        b\n- id: pci-dss-3-4-cvv-in-source\n  languages:\n  - javascript\n  - typescript\n\
-        \  - python\n  severity: ERROR\n  message: Possible CVV/CVC code in source.\
-        \ PCI-DSS v4.0 Req 3.3 prohibits storing\n    CVV after authorization. This\
-        \ MUST be transmitted directly to the payment processor\n    and never persisted.\n\
-        \  metadata:\n    cwe: 'CWE-312: Cleartext Storage of Sensitive Information'\n\
-        \    pci-dss: 3.3 Protect stored cardholder data\n    ai-devsecops-source:\
-        \ pci-dss.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$CVV = $REQ.body.cvv\n\
-        \n        '\n    - pattern: '$CVV = $REQ.body.cvc\n\n        '\n    - pattern:\
-        \ '$X.cvv = $VAL\n\n        '\n    - pattern: '$X.cvc = $VAL\n\n        '\n\
-        \    - pattern: 'db.save(..., $CVV, ...)\n\n        '\n- id: pci-dss-3-4-magnetic-stripe-data\n\
-        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
-        \ Possible magnetic stripe data or track data. PCI-DSS forbids storing CVV2,\n\
-        \    PIN, or full magnetic stripe data after authorization. Reject the entire\
-        \ request\n    and inform the customer.\n  metadata:\n    cwe: 'CWE-312: Cleartext\
-        \ Storage of Sensitive Information'\n    pci-dss: 3.2 Protect stored cardholder\
-        \ data\n    ai-devsecops-source: pci-dss.yml\n  pattern-regex: \\b(?:track1|track2|magnetic[-_\
-        \ ]?stripe)\\b\n- id: pci-dss-4-payment-over-http\n  languages:\n  - javascript\n\
-        \  - typescript\n  - python\n  severity: ERROR\n  message: Payment endpoint\
-        \ over HTTP (not HTTPS). PCI-DSS v4.0 Req 4.2 requires strong\n    cryptography\
-        \ (TLS 1.2+) for transmitting cardholder data over open networks. Use\n  \
-        \  https:// for all payment-related URLs.\n  metadata:\n    cwe: 'CWE-319:\
-        \ Cleartext Transmission of Sensitive Information'\n    pci-dss: 4.2 Use strong\
-        \ cryptography for cardholder data transmission\n    ai-devsecops-source:\
-        \ pci-dss.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$URL = \"\
-        http://.../*payment*\"\n\n        '\n    - pattern: '$URL = \"http://.../*checkout*\"\
-        \n\n        '\n    - pattern: '$URL = \"http://.../*card*\"\n\n        '\n\
-        \    - pattern: 'fetch(\"http://.../*payment*\", ...)\n\n        '\n- id:\
-        \ pci-dss-6-5-1-injection-flaws\n  languages:\n  - javascript\n  - typescript\n\
-        \  severity: ERROR\n  message: SQL injection in payment context. PCI-DSS v4.0\
-        \ Req 6.5.1 mandates protection\n    against injection flaws. Use parameterized\
-        \ queries.\n  metadata:\n    cwe: 'CWE-89: SQL Injection'\n    pci-dss: 6.5.1\
-        \ Address common coding vulnerabilities in software\n    owasp: A03:2021 Injection\n\
-        \    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
-        \    - pattern: 'db.query(\"SELECT * FROM payments WHERE id = ''\" + $ID +\
-        \ \"''\")\n\n        '\n    - pattern: 'db.query(\"SELECT * FROM orders WHERE\
-        \ card_id = ''\" + $CARD + \"''\")\n\n        '\n    - pattern: 'db.query(`SELECT\
-        \ * FROM payments WHERE amount = ${$X}`)\n\n        '\n- id: pci-dss-6-5-7-xss\n\
-        \  languages:\n  - javascript\n  - typescript\n  severity: ERROR\n  message:\
-        \ XSS in payment context (cardholder data exposure). PCI-DSS v4.0 Req 6.5.7\n\
-        \    requires protection against XSS for any page that handles cardholder\
-        \ data. Sanitize\n    all user input with textContent or a proven sanitizer\
-        \ (DOMPurify).\n  metadata:\n    cwe: 'CWE-79: Cross-site Scripting'\n   \
-        \ pci-dss: 6.5.7 Address common coding vulnerabilities\n    owasp: A03:2021\
-        \ Injection\n    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
-        \    - pattern: '$EL.innerHTML = $REQ.body.billingAddress\n\n        '\n \
-        \   - pattern: 'res.send(\"<div>\" + $REQ.body.cardholderName + \"</div>\"\
-        )\n\n        '\n- id: pci-dss-8-3-1-strong-auth-payment\n  languages:\n  -\
-        \ javascript\n  - typescript\n  - python\n  severity: ERROR\n  message: Payment\
-        \ endpoint without strong authentication. PCI-DSS v4.0 Req 8.3.1\n    requires\
-        \ strong authentication factors (MFA, OTP, biometrics) for access to cardholder\n\
-        \    data. Apply authRequired or requireAuth middleware to /payment, /checkout,\
-        \ /api/orders.\n  metadata:\n    cwe: 'CWE-306: Missing Authentication for\
-        \ Critical Function'\n    pci-dss: 8.3.1 Strong authentication for cardholder\
-        \ data access\n    owasp-api: API5:2023 Broken Function Level Authorization\n\
-        \    ai-devsecops-source: pci-dss.yml\n  patterns:\n  - pattern-either:\n\
-        \    - pattern: '$APP.post(\"/payment\", $HANDLER)\n\n        '\n    - pattern:\
-        \ '$APP.post(\"/checkout\", $HANDLER)\n\n        '\n    - pattern: '$APP.post(\"\
-        /api/charge\", $HANDLER)\n\n        '\n  - pattern-not: '$APP.post(\"/payment\"\
-        , authRequired, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
-        , requireAuth, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
-        , isAuthenticated, $HANDLER)\n\n      '\n  - pattern-not: '$APP.post(\"/payment\"\
-        , authMiddleware, $HANDLER)\n\n      '\n- id: pci-dss-10-2-audit-log-cardholder-access\n\
+        \    - pattern: require(\"sha1\")\n- id: ecommerce-webhook-no-signature-check\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: Webhook handler tidak verify payment-provider signature (Stripe\
+        \ `stripe.webhooks.constructEvent`,\n    Midtrans signature, Xendit callback\
+        \ token). Attacker bisa POST forged event dan\n    mark order paid. OWASP\
+        \ API2:2023 + PCI-DSS 4.0 \xA76.4.3.\n  metadata:\n    cwe: 'CWE-345: Insufficient\
+        \ Verification of Data Authenticity'\n    owasp-api: API2:2023 Broken Authentication\n\
+        \    pci-dss: 6.4.3 Protect web app from forged payment callbacks\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$APP.post(\"\
+        /webhook\", $H)\n\n        '\n    - pattern: '$APP.post(\"/webhooks/stripe\"\
+        , $H)\n\n        '\n    - pattern: '$APP.post(\"/webhooks/midtrans\", $H)\n\
+        \n        '\n    - pattern: '$APP.post(\"/webhooks/xendit\", $H)\n\n     \
+        \   '\n    - pattern: 'router.post(\"/webhook\", $H)\n\n        '\n  - pattern-not:\
+        \ '$APP.post(\"/webhook\", verifySignature, $H)\n\n      '\n  - pattern-not:\
+        \ '$APP.post(\"/webhook\", $VERIFY, $H)\n\n      '\n- id: ecommerce-order-amount-from-client\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: Order amount/price/currency dibaca dari request body atau query\
+        \ string.\n    Attacker bisa checkout dengan amount=$1. Selalu hitung ulang\
+        \ di server dari product_id\n    + quantity. PCI-DSS 4.0 \xA76.5.6 + OWASP\
+        \ API3:2023.\n  metadata:\n    cwe: 'CWE-602: Client-Side Enforcement of Server-Side\
+        \ Security'\n    owasp-api: API3:2023 Broken Object Property Level Authorization\n\
+        \    pci-dss: 6.5.6 Test payment flows for amount tampering\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$ORDER.amount\
+        \ = $REQ.body.amount\n\n        '\n    - pattern: '$ORDER.total = $REQ.body.total\n\
+        \n        '\n    - pattern: '$ORDER.price = $REQ.body.price\n\n        '\n\
+        \    - pattern: '$AMOUNT = $REQ.body.amount\n\n        '\n    - pattern: 'amount\
+        \ = $REQ.json.get(\"amount\")\n\n        '\n  - pattern-not: 'amount = $REQ.json.get(\"\
+        amount\", None)  # IGNORE\n\n      '\n- id: ecommerce-refund-without-original-charge\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: Refund endpoint tidak cek apakah `charge_id` belongs ke `merchant_id`\
+        \ saat\n    ini. Attacker bisa refund order dari merchant lain dengan iterate\
+        \ ID. OWASP API1:2023.\n  metadata:\n    cwe: 'CWE-639: Authorization Bypass\
+        \ Through User-Controlled Key'\n    owasp-api: API1:2023 Broken Object Level\
+        \ Authorization\n    ai-devsecops-source: ecommerce.yml\n  patterns:\n  -\
+        \ pattern-either:\n    - pattern: '$REFUND = stripe.refunds.create({ charge:\
+        \ $ID, ... })\n\n        '\n    - pattern: '$REFUND = stripe.Refund.create(charge=$ID)\n\
+        \n        '\n    - pattern: 'xendit.Refund.create(external_id=$ID, ...)\n\n\
+        \        '\n  - pattern-not: '$REFUND = stripe.refunds.create({ charge: $ID,\
+        \ metadata: { merchant_id:\n      $MID } })\n\n      '\n- id: ecommerce-currency-float-arithmetic\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: ERROR\n\
+        \  message: Perhitungan currency pakai `float` / `Number` (IEEE-754). Hasilnya\
+        \ 0.1\n    + 0.2 = 0.30000000000000004. Pakai integer cents (`amount_cents`)\
+        \ atau library\n    `dinero.js` / `decimal.Decimal`. PCI-DSS 4.0 \xA76.5.1\
+        \ + OWASP API3:2023.\n  metadata:\n    cwe: 'CWE-682: Incorrect Calculation'\n\
+        \    owasp-api: API3:2023 Broken Object Property Level Authorization\n   \
+        \ pci-dss: 6.5.1 Avoid floating point for monetary values\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  patterns:\n  - pattern-either:\n    - pattern: '$TOTAL\
+        \ = $A + $B\n\n        '\n    - pattern: '$TOTAL = $A * $QTY\n\n        '\n\
+        \    - pattern: '$PRICE * $QTY\n\n        '\n  - pattern-not-inside: '...\n\
+        \n      '\n  - metavariable-regex:\n      metavariable: $PRICE\n      regex:\
+        \ .*(price|amount|total|grand_total|subtotal).*\n- id: ecommerce-stock-decrement-without-lock\n\
         \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
-        \  message: 'Access to cardholder data without audit log. PCI-DSS v4.0 Req\
-        \ 10.2 requires\n    audit logs for all access to cardholder data. Log: user\
-        \ ID, type of event, time,\n    success/failure, origin.'\n  metadata:\n \
-        \   cwe: 'CWE-778: Insufficient Logging'\n    pci-dss: 10.2 Audit logs for\
-        \ cardholder data access\n    ai-devsecops-source: pci-dss.yml\n  patterns:\n\
-        \  - pattern-either:\n    - pattern: '$APP.get(\"/payment/:id\", $HANDLER)\n\
-        \n        '\n    - pattern: '$APP.get(\"/api/cards/:id\", $HANDLER)\n\n  \
-        \      '\n  - pattern-not: '$APP.get(\"/payment/:id\", auditLog, $HANDLER)\n\
-        \n      '\n  - pattern-not: '$APP.get(\"/payment/:id\", $HANDLER, $LOGGER)\n\
-        \n      '\nSEMGREP_EOF\ndocker run --rm \\\n  -v \"${{ github.workspace }}:/src:ro\"\
+        \  message: 'Stock decrement (`stock -= 1` atau `$item.stock -= 1`) tanpa\
+        \ atomic operation\n    (SELECT FOR UPDATE, optimistic locking, atau atomic\
+        \ `$inc`). Race condition: 2\n    users beli 1 item terakhir \u2192 stock\
+        \ = -1, oversell. OWASP API4:2023.'\n  metadata:\n    cwe: 'CWE-362: Concurrent\
+        \ Execution using Shared Resource with Improper Synchronization\n      (''Race\
+        \ Condition'')'\n    owasp-api: API4:2023 Unrestricted Resource Consumption\n\
+        \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$ITEM.stock -= 1\n\n        '\n    - pattern: '$ITEM.stock\
+        \ = $ITEM.stock - 1\n\n        '\n    - pattern: '$STOCK -= $QTY\n\n     \
+        \   '\n  - pattern-not-inside: '...\n\n      '\n- id: ecommerce-idempotency-key-missing\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: 'Payment endpoint tidak pakai `Idempotency-Key` header. Network\
+        \ retry \u2192\n    double charge. Set `Idempotency-Key: <uuid>` di Stripe.create\
+        \ + cek di server.\n    OWASP API4:2023.'\n  metadata:\n    cwe: 'CWE-754:\
+        \ Improper Check for Unusual or Exceptional Conditions'\n    owasp-api: API4:2023\
+        \ Unrestricted Resource Consumption\n    ai-devsecops-source: ecommerce.yml\n\
+        \  pattern-regex: stripe\\.(?:paymentIntents|charges)\\.create\\(\n- id: ecommerce-pii-in-url\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: PII (email, phone, name, address) di-pass via URL path atau query\
+        \ string.\n    URL masuk ke server log, browser history, proxy log \u2192\
+        \ PII leak. Paku body POST.\n    OWASP API3:2023.\n  metadata:\n    cwe: 'CWE-359:\
+        \ Exposure of Private Personal Information to an Unauthorized Actor'\n   \
+        \ owasp-api: API3:2023 Broken Object Property Level Authorization\n    ai-devsecops-source:\
+        \ ecommerce.yml\n  pattern-regex: \\.(get|post|put|patch)\\s*\\(\\s*[\"'][^\"\
+        ']*(email|phone|ssn|nik|ktp)\n- id: ecommerce-shipping-address-trust-client\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: 'Shipping cost / tax dihitung dari `req.body.country` atau `req.body.state`\n\
+        \    tanpa validasi whitelist. Attacker bisa pilih `country: \"XX\"` dengan\
+        \ tax 0%. OWASP\n    API3:2023.'\n  metadata:\n    cwe: 'CWE-840: Business\
+        \ Logic Errors'\n    owasp-api: API3:2023 Broken Object Property Level Authorization\n\
+        \    ai-devsecops-source: ecommerce.yml\n  patterns:\n  - pattern-either:\n\
+        \    - pattern: '$TAX = $REQ.body.country\n\n        '\n    - pattern: '$SHIPPING\
+        \ = $REQ.body.country\n\n        '\n    - pattern: 'if ($REQ.body.country\
+        \ == \"...\"):\n\n        '\n  - pattern-not: '...\n\n      '\n- id: ecommerce-test-card-in-source\n\
+        \  languages:\n  - javascript\n  - typescript\n  - python\n  severity: WARNING\n\
+        \  message: Test card number (Visa 4242 4242 4242 4242, dll) hardcoded di\
+        \ source code.\n    PCI-DSS melarang hardcoded test PAN di production. Pakai\
+        \ env var `STRIPE_TEST_CARD`\n    atau seed di test-only file.\n  metadata:\n\
+        \    cwe: 'CWE-798: Use of Hard-coded Credentials'\n    pci-dss: 3.4 Render\
+        \ PAN unreadable\n    ai-devsecops-source: ecommerce.yml\n  pattern-regex:\
+        \ \\b(?:4242\\s*4242\\s*4242\\s*4242|4000\\s*0000\\s*0000\\s*0002|5555\\s*5555\\\
+        s*5555\\s*4444)\\b\n- id: ecommerce-secret-key-in-client\n  languages:\n \
+        \ - javascript\n  - typescript\n  severity: ERROR\n  message: Stripe/PayPal/Midtrans\
+        \ secret key atau publishable key di reference di\n    client-side bundle.\
+        \ Secret key HARUS server-side only. Publishable key boleh di\n    client\
+        \ tapi jangan hardcode production key. PCI-DSS 4.0 \xA73.5.1.\n  metadata:\n\
+        \    cwe: 'CWE-798: Use of Hard-coded Credentials'\n    pci-dss: 3.5.1 Cryptographic\
+        \ keys must be stored protected\n    ai-devsecops-source: ecommerce.yml\n\
+        \  pattern-regex: (?:sk_live_|sk_test_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,})\n\
+        SEMGREP_EOF\ndocker run --rm \\\n  -v \"${{ github.workspace }}:/src:ro\"\
         \ \\\n  -v \"${{ github.workspace }}:/out\" \\\n  -v \"/tmp/ai-devsecops-rules.yml:/rules/ai-devsecops.yml:ro\"\
         \ \\\n  returntocorp/semgrep:1.99.0 \\\n  semgrep \\\n  --config=/rules/ai-devsecops.yml\
         \ \\\n  --config=p/owasp-top-ten \\\n  --config=p/javascript \\\n  --config=p/nodejs\
@@ -754,181 +913,9 @@ jobs:
         path: trivy-image-results.sarif
         if-no-files-found: warn
         retention-days: 30
-  jwt-auth-hardening:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true
-    needs:
-    - sast
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      with:
-        persist-credentials: false
-    - name: scan-auth-files-for-insecure-jwt-and-bcrypt-usage
-      run: "set -e\nAUTH_FILES=$(find src -type f \\( -name 'auth*.js' -o -path '*middleware*auth*'\
-        \ \\))\nif [ -z \"$AUTH_FILES\" ]; then echo 'No auth files found under src/';\
-        \ exit 0; fi\necho \"Scanning: $AUTH_FILES\"\n# 1) jwt.sign without expiresIn\n\
-        if grep -nE \"jwt\\.sign\\([^)]*\\)\" $AUTH_FILES | grep -vE 'expiresIn|expires_in'\
-        \ ; then\n  echo '::error file=src/routes/auth.js::jwt.sign() call missing\
-        \ expiresIn option'\n  exit 1\nfi\n# 2) bcrypt cost factor < 10\nif grep -nE\
-        \ \"bcrypt\\.(hash|hashSync|genSalt|genSaltSync)\\([^)]*[0-9]\" $AUTH_FILES\
-        \ | grep -vE ',(1[0-9]|[2-9][0-9])' ; then\n  echo '::error file=src/routes/auth.js::bcrypt\
-        \ cost factor appears < 10'\n  exit 1\nfi\n# 3) hardcoded JWT secret fallback\n\
-        if grep -nEi \"(jwt[_-]?secret|JWT_SECRET)\\s*\\|\\|\\s*['\\\"][^'\\\"]+['\\\
-        \"]\" $AUTH_FILES ; then\n  echo '::error file=src/routes/auth.js::hardcoded\
-        \ JWT secret fallback detected'\n  exit 1\nfi\necho 'jwt-auth-hardening shell\
-        \ checks passed.'\n"
-    - name: semgrep-jwt-bcrypt-rules
-      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
-
-        echo ''Rule body:''
-
-        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
-
-
-        SEMGREP_EOF
-
-        '
-    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
-      if: always()
-      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
-        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
-        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
-        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
-        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
-        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
-        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
-        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
-        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
-        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
-        \ bytes\"\n"
-    - name: Upload semgrep SARIF to GitHub Code Scanning
-      if: always()
-      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
-      with:
-        sarif_file: semgrep-results.sarif
-        category: semgrep
-  express-api-hardening:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true
-    needs:
-    - sast
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      with:
-        persist-credentials: false
-    - name: verify-routes-use-authn-and-rate-limit
-      run: "set -e\n[ -f src/server.js ] || { echo 'src/server.js missing'; exit 0;\
-        \ }\n# 1) requireAuth / authMiddleware must be imported and applied to /orders\
-        \ and /checkout\nfor route in orders checkout; do\n  f=\"src/routes/${route}.js\"\
-        \n  [ -f \"$f\" ] || continue\n  if ! grep -qE 'router\\.(get|post|put|delete|patch)\\\
-        s*\\(' \"$f\" ; then continue; fi\n  if ! grep -qE \"requireAuth|authMiddleware|verifyToken|protect\"\
-        \ \"$f\" ; then\n    echo \"::error file=$f::No authentication middleware\
-        \ applied to ${route} routes (BOLA risk)\"\n    exit 1\n  fi\ndone\n# 2) express-rate-limit\
-        \ must be imported and applied to /auth and /checkout\nfor route in auth checkout;\
-        \ do\n  f=\"src/routes/${route}.js\"\n  [ -f \"$f\" ] || continue\n  if !\
-        \ grep -qE 'rateLimit|RateLimit|rateLimiter|slowDown' \"$f\" ; then\n    echo\
-        \ \"::error file=$f::No rate limiting on ${route} routes (API4:2023 Unrestricted\
-        \ Resource Consumption)\"\n    exit 1\n  fi\ndone\n# 3) verify the package\
-        \ actually depends on express-rate-limit\nif ! node -e \"require('express-rate-limit')\"\
-        \ 2>/dev/null ; then\n  echo '::error::express-rate-limit not installed in\
-        \ package.json'\n  exit 1\nfi\necho 'express-api-hardening shell checks passed.'\n"
-    - name: semgrep-express-missing-input-validation
-      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
-
-        echo ''Rule body:''
-
-        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
-
-
-        SEMGREP_EOF
-
-        '
-    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
-      if: always()
-      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
-        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
-        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
-        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
-        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
-        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
-        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
-        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
-        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
-        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
-        \ bytes\"\n"
-    - name: Upload semgrep SARIF to GitHub Code Scanning
-      if: always()
-      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
-      with:
-        sarif_file: semgrep-results.sarif
-        category: semgrep
-  helmet-csp-validation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true
-    needs:
-    - sast
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      with:
-        persist-credentials: false
-    - name: verify-helmet-config-in-server-js
-      run: "set -e\nS=src/server.js\n[ -f \"$S\" ] || { echo \"$S missing\"; exit\
-        \ 0; }\n# 1) helmet must be imported and used\ngrep -qE \"require\\(['\\\"\
-        ]helmet['\\\"]\\)|from ['\\\"]helmet['\\\"]\" \"$S\" || { echo \"::error file=$S::helmet\
-        \ not imported\"; exit 1; }\ngrep -qE \"app\\.use\\(\\s*helmet\\(\" \"$S\"\
-        \ || { echo \"::error file=$S::app.use(helmet(...)) not found\"; exit 1; }\n\
-        # 2) helmet() with no options or just helmet() is a default config -> weak\
-        \ CSP\nif grep -qE \"app\\.use\\(\\s*helmet\\(\\s*\\)\\s*[,)]\" \"$S\" ; then\n\
-        \  echo \"::error file=$S::helmet() called with no options; CSP/HSTS/coep\
-        \ will use insecure defaults\"\n  exit 1\nfi\n# 3) contentSecurityPolicy must\
-        \ be explicitly configured\nif ! grep -qE \"contentSecurityPolicy\" \"$S\"\
-        \ ; then\n  echo \"::error file=$S::helmet contentSecurityPolicy directive\
-        \ not configured\"\n  exit 1\nfi\n# 4) hsts must be present\nif ! grep -qE\
-        \ \"hsts\" \"$S\" ; then\n  echo \"::error file=$S::helmet hsts not configured\"\
-        \n  exit 1\nfi\n# 5) CSP must not be the trivial default (default-src 'self'\
-        \ only)\nif grep -qE \"default-src\\s+['\\\"]self['\\\"]\\s*;?\\s*\\\"\" \"\
-        $S\" || grep -qE \"default-src\\s+'self'\\s*;?\\s*\\\"\" \"$S\" ; then\n \
-        \ echo \"::warning file=$S::CSP uses only 'self' default-src; explicit img/script/connect-src\
-        \ needed for checkout\"\nfi\necho 'helmet-csp-validation shell checks passed.'\n"
-    - name: semgrep-helmet-misconfiguration
-      run: 'echo ''AI-designed Semgrep rule (id=ai-rule):''
-
-        echo ''Rule body:''
-
-        cat <<''SEMGREP_EOF'' | sed ''s/^/  /''
-
-
-        SEMGREP_EOF
-
-        '
-    - name: Ensure semgrep-results.sarif exists (fallback for 0 findings)
-      if: always()
-      run: "if [ ! -s semgrep-results.sarif ]; then\n  echo \"::notice::semgrep found\
-        \ 0 findings. Generating empty SARIF to satisfy upload-sarif.\"\n  printf\
-        \ '%s\\n' \\\n    '{' \\\n    '  \"version\": \"2.1.0\",' \\\n    '  \"$schema\"\
-        : \"https://json.schemastore.org/sarif-2.1.0.json\",' \\\n    '  \"runs\"\
-        : [' \\\n    '    {' \\\n    '      \"tool\": {' \\\n    '        \"driver\"\
-        : {' \\\n    '          \"name\": \"semgrep\",' \\\n    '          \"version\"\
-        : \"0.65.0\",' \\\n    '          \"informationUri\": \"https://aquasecurity.github.io/trivy/\"\
-        ' \\\n    '        }' \\\n    '      },' \\\n    '      \"results\": []' \\\
-        \n    '    }' \\\n    '  ]' \\\n    '}' > semgrep-results.sarif\nfi\necho\
-        \ \"\u2713 semgrep-results.sarif size: $(stat -c%s semgrep-results.sarif)\
-        \ bytes\"\n"
-    - name: Upload semgrep SARIF to GitHub Code Scanning
-      if: always()
-      uses: github/codeql-action/upload-sarif@b1722c1245f90604c2c348f9d1624af97ea8fc6e
-      with:
-        sarif_file: semgrep-results.sarif
-        category: semgrep
   domain-compliance:
     needs:
-    - helmet-csp-validation
+    - container-scan
     uses: ./.github/workflows/ai-devsecops-custom.yml
     with:
       detected_domain: e-commerce
